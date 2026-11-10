@@ -1,0 +1,7 @@
+deepagents>=0.7,<1
+langchain>=1,<2
+langgraph>=1,<2
+langchain-openai>=1,<2
+python-dotenv>=1,<2
+pytest>=8,<10
+langchain-google-genai>=3

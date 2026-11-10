@@ -1,0 +1,38 @@
+
+[
+  {
+    "id": "DOC-001",
+    "title": "Retrieval-Augmented Generation",
+    "content": "RAG combines external document retrieval with language model generation. The retriever selects relevant context and the generator uses that context to construct an answer. Retrieval quality and answer faithfulness should be evaluated separately."
+  },
+  {
+    "id": "DOC-002",
+    "title": "BM25 Retrieval",
+    "content": "BM25 is a lexical retrieval algorithm that ranks documents using query term frequency, inverse document frequency and document length normalization. It works well for exact terminology and keyword matching."
+  },
+  {
+    "id": "DOC-003",
+    "title": "Dense Retrieval",
+    "content": "Dense retrieval encodes queries and documents into embedding vectors. Similarity search retrieves semantically related documents even when they do not contain identical words. Performance depends on the embedding model and domain."
+  },
+  {
+    "id": "DOC-004",
+    "title": "Hybrid Retrieval",
+    "content": "Hybrid retrieval combines lexical and dense retrieval results. Reciprocal Rank Fusion, also called RRF, can merge ranked lists using reciprocal rank contributions. Reranking can improve the ordering of candidate documents."
+  },
+  {
+    "id": "DOC-005",
+    "title": "RAGAS Evaluation",
+    "content": "RAGAS provides metrics for evaluating RAG applications, including faithfulness, answer relevancy and context precision. Faithfulness measures whether answer claims are supported by retrieved context. Context precision evaluates the ranking of relevant retrieved information."
+  },
+  {
+    "id": "DOC-006",
+    "title": "DeepEval Evaluation",
+    "content": "DeepEval is a testing and evaluation framework for LLM applications. It supports metrics such as answer relevancy, faithfulness and contextual relevancy, along with tests for agent and tool behavior."
+  },
+  {
+    "id": "DOC-007",
+    "title": "Reranking",
+    "content": "A reranker rescoring step evaluates retrieved candidate documents relative to a query. Cross-encoder rerankers jointly process the query and document and can improve ranking quality at additional computational cost."
+  }
+]
