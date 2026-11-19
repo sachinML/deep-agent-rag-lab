@@ -30,7 +30,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 MODEL = ChatGoogleGenerativeAI(
     model=os.getenv("MODEL_NAME", "gemini-3.5-flash-lite"),
     vertexai=False,
-    temperature=0,
     max_retries=1,
     timeout=30,
 )
@@ -42,33 +41,33 @@ MODEL = ChatGoogleGenerativeAI(
 
 
 
-@wrap_tool_call # It is a Python decorator that registers your function as middleware for tool execution. It enables your function to surround a tool call.
-def log_tool_calls(request, handler):
-    """Log tool name, arguments and execution duration."""
+# @wrap_tool_call # It is a Python decorator that registers your function as middleware for tool execution. It enables your function to surround a tool call.
+# def log_tool_calls(request, handler):
+#     """Log tool name, arguments and execution duration."""
 
-    import time
+#     import time
 
-    tool_name = request.tool_call["name"]
-    tool_args = request.tool_call["args"]
+#     tool_name = request.tool_call["name"]
+#     tool_args = request.tool_call["args"]
 
-    print(f"\n[TOOL] Name: {tool_name}")
-    print(f"[TOOL] Arguments: {tool_args}")
+#     print(f"\n[TOOL] Name: {tool_name}")
+#     print(f"[TOOL] Arguments: {tool_args}")
 
-    start = time.perf_counter()
+#     start = time.perf_counter()
 
-    try:
-        result = handler(request)
+#     try:
+#         result = handler(request)
 
-        duration = time.perf_counter() - start # perf_counter() is a high-resolution clock suitable for measuring elapsed time.
+#         duration = time.perf_counter() - start # perf_counter() is a high-resolution clock suitable for measuring elapsed time.
 
-        print(f"[TOOL] Success: {tool_name}")
-        print(f"[TOOL] Duration: {duration:.3f}s")
+#         print(f"[TOOL] Success: {tool_name}")
+#         print(f"[TOOL] Duration: {duration:.3f}s")
 
-        return result # The agent needs the tool result so that Gemini can use it to generate an answer.
+#         return result # The agent needs the tool result so that Gemini can use it to generate an answer.
 
-    except Exception as error:
-        print(f"[TOOL] Error: {error}")
-        raise
+#     except Exception as error:
+#         print(f"[TOOL] Error: {error}")
+#         raise
 
 # request contains details about the requested tool call and relevant runtime information.
 # handler is the callable that continues the wrapped execution.
@@ -96,6 +95,39 @@ def log_tool_calls(request, handler):
 # - Replace execution with a valid alternative response.
 # But your current middleware performs logging only.
 
+
+
+@wrap_tool_call
+def log_tool_calls(request, handler):
+    import time
+
+    tool_name = request.tool_call["name"]
+    tool_args = request.tool_call["args"]
+
+    print(f"\n[TOOL START] {tool_name}")
+    print(f"[ARGS] {tool_args}", flush=True)
+
+    start = time.perf_counter()
+
+    try:
+        result = handler(request)
+
+        duration = time.perf_counter() - start
+
+        print(
+            f"[TOOL END] {tool_name} "
+            f"({duration:.2f}s)",
+            flush=True,
+        )
+
+        return result
+
+    except Exception as error:
+        print(
+            f"[TOOL FAILED] {tool_name}: {error}",
+            flush=True,
+        )
+        raise
 
 # --------------------------------------------------
 # 2. Long-term memory store
@@ -145,41 +177,48 @@ backend = CompositeBackend(
 # 4. Create specialized subagent
 # --------------------------------------------------
 
+
 research_subagent = {
     "name": "research-agent",
 
     "description": (
-        "Use for multi-step research questions that "
-        "require searching and comparing multiple "
-        "knowledge-base documents."
+        "Specialist for multi-document research and comparison. "
+        "Use for complex requests that require gathering evidence "
+        "from multiple knowledge-base documents and synthesizing "
+        "a research summary."
     ),
 
     "system_prompt": """
-    You are a specialized RAG research agent.
+    You are a specialized research agent.
 
-    Responsibilities:
-    - Search the technical knowledge base.
-    - Compare findings across documents.
-    - Report evidence using document IDs.
-    - Identify missing or unsupported information.
-    - Return concise research findings to the main agent.
+    Your job:
+    1. Search the local knowledge base using rag_search_chunks.
+    2. Gather evidence from relevant documents.
+    3. Compare findings and identify trade-offs.
+    4. Cite document IDs for factual claims.
+    5. Return a concise research summary to the supervisor.
 
-    Do not invent sources.
+    Do not invent source IDs or unsupported findings.
     """,
 
     "tools": [rag_search_chunks],
+
+    "middleware": [log_tool_calls],
 }
+
 
 
 # --------------------------------------------------
 # 5. Main agent instructions
 # --------------------------------------------------
 
+
 SYSTEM_PROMPT = """
-You are a technical Agentic RAG research assistant.
+You are a technical Agentic RAG research assistant
+acting as the main supervisor agent.
 
 You help users understand retrieval, RAG architecture,
-embedding models, reranking and LLM evaluation.
+embedding models, reranking, and LLM evaluation.
 
 BEHAVIOR:
 
@@ -187,15 +226,28 @@ BEHAVIOR:
    Answer directly if no external evidence is needed.
 
 2. Technical knowledge-base questions:
-   Use rag_search_chunks to retrieve supporting evidence.
+   You do not have direct access to rag_search_chunks.
+
+   Delegate knowledge-base research to research-agent
+   using the task tool.
+
+   Use the evidence returned by research-agent to
+   generate your final answer.
 
 3. Complex research questions:
-   Consider delegating research to research-agent
-   through the task tool.
+   Delegate document research and comparisons to
+   research-agent.
+
+   Provide the subagent with a clear research objective
+   and request document IDs as supporting evidence.
+
+   After receiving its findings, synthesize a final answer.
 
 4. Planning:
    For genuinely multi-step tasks, create and update
    a todo list using write_todos.
+
+   Do not create a plan unnecessarily for simple tasks.
 
 5. Filesystem:
    Save temporary research findings under /workspace/.
@@ -207,7 +259,9 @@ BEHAVIOR:
    Preserve existing instructions.
 
 7. Grounding:
-   Cite knowledge-base document IDs.
+   Cite knowledge-base document IDs supplied by the
+   research-agent.
+
    Never invent source IDs or evaluation scores.
    Admit when evidence is insufficient.
 
@@ -215,9 +269,17 @@ BEHAVIOR:
    For complex research, you may save a report
    using the filesystem write_file tool.
 
-Remember: You are allowed to answer directly without
-delegating or planning when the task is simple.
+9. Delegation:
+   You are responsible for coordinating work,
+   not performing knowledge-base retrieval yourself.
+
+   Use research-agent whenever document evidence
+   is required.
+
+   You may answer directly when external evidence
+   is not necessary.
 """
+
 
 
 # --------------------------------------------------
@@ -236,7 +298,7 @@ agent = create_deep_agent(
 
     system_prompt=SYSTEM_PROMPT,
 
-    tools=[rag_search_chunks],
+    tools=[], #[rag_search_chunks],
 
     subagents=[research_subagent],
 
