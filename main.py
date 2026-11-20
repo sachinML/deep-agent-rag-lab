@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from uuid import uuid4
 
 from deepagents import create_deep_agent
 from deepagents.backends import (
@@ -20,6 +21,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from knowledge import rag_search_chunks
+from workflow import build_workflow
+from evidence import evidence_collector
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -97,6 +100,7 @@ MODEL = ChatGoogleGenerativeAI(
 
 
 
+
 @wrap_tool_call
 def log_tool_calls(request, handler):
     import time
@@ -105,7 +109,7 @@ def log_tool_calls(request, handler):
     tool_args = request.tool_call["args"]
 
     print(f"\n[TOOL START] {tool_name}")
-    print(f"[ARGS] {tool_args}", flush=True)
+    print(f"[ARGS] {tool_args}")
 
     start = time.perf_counter()
 
@@ -114,20 +118,24 @@ def log_tool_calls(request, handler):
 
         duration = time.perf_counter() - start
 
+        # Capture retrieval evidence for evaluation
+        if tool_name == "rag_search_chunks":
+            content = result.content
+
+            if isinstance(content, str):
+                evidence_collector.add(content)
+
         print(
             f"[TOOL END] {tool_name} "
-            f"({duration:.2f}s)",
-            flush=True,
+            f"({duration:.2f}s)"
         )
 
         return result
 
     except Exception as error:
-        print(
-            f"[TOOL FAILED] {tool_name}: {error}",
-            flush=True,
-        )
+        print(f"[TOOL FAILED] {tool_name}: {error}")
         raise
+
 
 # --------------------------------------------------
 # 2. Long-term memory store
@@ -316,6 +324,8 @@ agent = create_deep_agent(
     checkpointer=checkpointer,
 )
 
+workflow = build_workflow(agent)
+
 
 # --------------------------------------------------
 # 8. CLI execution
@@ -355,19 +365,24 @@ def main():
         }
 
         try:
-            result = agent.invoke(
-                {
-                    "messages": [
-                        {"role": "user", "content": question}
-                    ]
-                },
-                config=config,
-            )
+            result = workflow.invoke({
+                "question": question,
+                "answer": "",
+                "thread_id": f"local-thread-{thread_number}-{uuid4().hex}",
+                "evaluation": {},
+                "attempts": 0,
+                "retrieval_context": [],
+            })
 
-            final_message = result["messages"][-1]
+            print("\nAttempts:", result["attempts"])
+            print("\nEvaluation:", result["evaluation"])
 
-            print("\nAgent:")
-            print(final_message.text)
+            if result["evaluation"]["passed"]:
+                print("\nAgent:")
+                print(result["answer"])
+            else:
+                print("\nAgent:")
+                print("Unable to produce a validated answer.")
 
             if result.get("todos"):
                 print("\nTask plan:")
