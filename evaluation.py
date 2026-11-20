@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from deepeval.metrics import FaithfulnessMetric
 from deepeval.test_case import LLMTestCase
 from deepeval.models import LiteLLMModel
+from deepeval.metrics.faithfulness import FaithfulnessTemplate
 
 # Load environment variables before initializing the judge
 load_dotenv(
@@ -24,8 +25,6 @@ judge_model = LiteLLMModel(
     model="groq/openai/gpt-oss-120b",
     api_key=os.environ["GROQ_API_KEY"],
 )
-
-from deepeval.metrics.faithfulness import FaithfulnessTemplate
 
 
 class GroqFaithfulnessTemplate(FaithfulnessTemplate): # as groq is not follwing the deepeval template and showing error
@@ -89,7 +88,7 @@ def evaluate_faithfulness(
         include_reason=True,
         async_mode=False,
         penalize_ambiguous_claims=True,
-        verbose_mode=True,
+        verbose_mode=False,
         evaluation_template=GroqFaithfulnessTemplate,
     )
 

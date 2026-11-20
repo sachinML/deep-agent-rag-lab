@@ -24,11 +24,18 @@ from knowledge import rag_search_chunks
 from workflow import build_workflow
 from evidence import evidence_collector
 
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from langfuse import get_client, propagate_attributes
+from langfuse.langchain import CallbackHandler
+
+
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+langfuse_handler = CallbackHandler()
+langfuse = get_client()
 
 MODEL = ChatGoogleGenerativeAI(
     model=os.getenv("MODEL_NAME", "gemini-3.5-flash-lite"),
@@ -324,7 +331,7 @@ agent = create_deep_agent(
     checkpointer=checkpointer,
 )
 
-workflow = build_workflow(agent)
+workflow = build_workflow(agent, store)
 
 
 # --------------------------------------------------
@@ -365,14 +372,60 @@ def main():
         }
 
         try:
-            result = workflow.invoke({
-                "question": question,
-                "answer": "",
-                "thread_id": f"local-thread-{thread_number}-{uuid4().hex}",
-                "evaluation": {},
-                "attempts": 0,
-                "retrieval_context": [],
-            })
+            request_id = uuid4().hex
+
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="rag-request",
+            ) as span:
+                with propagate_attributes(
+                    trace_name="deep-agent-rag-workflow",
+                    session_id=f"local-thread-{thread_number}",
+                    tags=["deepagents", "langgraph", "rag"],
+                ):
+                    result = workflow.invoke(
+                        {
+                            "question": question,
+                            "answer": "",
+                            "thread_id": (
+                                f"local-thread-{thread_number}-{request_id}"
+                            ),
+                            "evaluation": {},
+                            "attempts": 0,
+                            "retrieval_context": [],
+                        },
+                        config={
+                            "callbacks": [langfuse_handler],
+                            "run_name": "agentic-rag-workflow",
+                        },
+                    )
+
+                    evaluation = result["evaluation"]
+
+                    # Save the quality score on this trace.
+                    if evaluation.get("score") is not None:
+                        langfuse.score_current_trace(
+                            name="faithfulness",
+                            value=float(evaluation["score"]),
+                            data_type="NUMERIC",
+                            comment=evaluation.get("feedback", ""),
+                        )
+
+                    # Save whether our evaluation passed.
+                    langfuse.score_current_trace(
+                        name="evaluation_passed",
+                        value=int(bool(evaluation.get("passed", False))),
+                        data_type="BOOLEAN",
+                    )
+
+                    # Save request/response information.
+                    span.update(
+                        input={"question": question},
+                        output={"answer": result["answer"]},
+                        metadata={"attempts": result["attempts"]},
+                    )
+
+            langfuse.flush()
 
             print("\nAttempts:", result["attempts"])
             print("\nEvaluation:", result["evaluation"])
@@ -391,6 +444,11 @@ def main():
                         f"- [{todo['status']}] "
                         f"{todo['content']}"
                     )
+
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
 
         except Exception:
             import traceback
