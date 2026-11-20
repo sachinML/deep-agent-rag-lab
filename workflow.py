@@ -4,6 +4,7 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from evidence import evidence_collector
 from evaluation import evaluate_faithfulness
+from langchain_core.runnables import RunnableConfig
 
 
 MAX_ATTEMPTS = 3  # Initial attempt + 2 retries
@@ -18,9 +19,12 @@ class WorkflowState(TypedDict):
     retrieval_context: list[str]
 
 
-def build_workflow(deep_agent):
+def build_workflow(deep_agent, store):
 
-    def generate_answer(state: WorkflowState):
+    def generate_answer(
+            state: WorkflowState,
+            config: RunnableConfig,
+            ):
         attempt = state["attempts"] + 1
 
         print(f"\n[LANGGRAPH] Generate attempt {attempt}")
@@ -47,8 +51,8 @@ def build_workflow(deep_agent):
             f"{state['thread_id']}-attempt-{attempt}"
         )
 
-        # Clear evidence from previous executions
-        evidence_collector.clear() # Otherwise, evidence from previous queries or retry attempts could contaminate the evaluation.
+        # Clear evidence from previous executions Otherwise, evidence from previous queries or retry attempts could contaminate the evaluation.
+        evidence_collector.clear()
 
         result = deep_agent.invoke(
             {
@@ -57,12 +61,15 @@ def build_workflow(deep_agent):
                 ]
             },
             config={
+                **config,
                 "configurable": {
-                    "thread_id": attempt_thread_id
+                    **config.get("configurable", {}),
+                    "thread_id": attempt_thread_id,
                 },
                 "recursion_limit": 60,
             },
         )
+
 
         # Extract unique documents from retrieval responses
         documents = evidence_collector.get_documents()
@@ -186,7 +193,7 @@ def build_workflow(deep_agent):
         },
     )
 
-    return builder.compile()
+    return builder.compile(store=store)
 
 
 # WorkflowState: Data shared between LangGraph nodes

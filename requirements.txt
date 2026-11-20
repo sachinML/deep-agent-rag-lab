@@ -6,3 +6,4 @@ python-dotenv>=1,<2
 pytest>=8,<10
 langchain-google-genai>=3
 deepeval
+langfuse
