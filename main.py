@@ -28,6 +28,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langfuse import get_client, propagate_attributes
 from langfuse.langchain import CallbackHandler
+from langchain_core.rate_limiters import InMemoryRateLimiter
 
 
 
@@ -37,11 +38,19 @@ load_dotenv(BASE_DIR / ".env")
 langfuse_handler = CallbackHandler()
 langfuse = get_client()
 
+
+rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.1, # Model request are spaced about 10 seconds apart.
+    check_every_n_seconds=0.1,
+    max_bucket_size=1,
+)
+
 MODEL = ChatGoogleGenerativeAI(
     model=os.getenv("MODEL_NAME", "gemini-3.5-flash-lite"),
     vertexai=False,
-    max_retries=1,
+    max_retries=2,
     timeout=30,
+    rate_limiter=rate_limiter,
 )
 
 
@@ -238,16 +247,33 @@ embedding models, reranking, and LLM evaluation.
 BEHAVIOR:
 
 1. Simple questions:
-   Answer directly if no external evidence is needed.
+   For greetings, conversational questions, or requests
+   unrelated to the technical knowledge base, you may
+   answer directly.
+
+   For any question involving retrieval, RAG architecture,
+   embedding models, reranking, or LLM evaluation,
+   research-agent delegation is mandatory, even if the
+   answer seems obvious or familiar.
 
 2. Technical knowledge-base questions:
    You do not have direct access to rag_search_chunks.
 
-   Delegate knowledge-base research to research-agent
-   using the task tool.
+   Before generating an answer about the technical
+   knowledge base, you MUST delegate research to
+   research-agent using the task tool.
 
-   Use the evidence returned by research-agent to
-   generate your final answer.
+   Ask research-agent to call rag_search_chunks and
+   return relevant document IDs and supporting evidence.
+
+   Do not answer these questions using only pretrained
+   model knowledge.
+
+   Generate your final answer using retrieved evidence
+   and include citations in the format [DOC-XXX].
+
+   If research-agent returns insufficient evidence,
+   acknowledge the limitation rather than inventing facts.
 
 3. Complex research questions:
    Delegate document research and comparisons to
@@ -288,11 +314,16 @@ BEHAVIOR:
    You are responsible for coordinating work,
    not performing knowledge-base retrieval yourself.
 
-   Use research-agent whenever document evidence
-   is required.
+   Always call research-agent for questions involving
+   RAG, retrieval, embeddings, reranking, or LLM evaluation.
 
-   You may answer directly when external evidence
-   is not necessary.
+   Direct answers are permitted only for greetings,
+   conversational interactions, or unrelated questions
+   that do not require knowledge-base research.
+
+   If evaluation feedback reports missing evidence
+   or citations, perform a new research delegation
+   before generating another answer.
 """
 
 
@@ -372,16 +403,17 @@ def main():
         }
 
         try:
+            # generates a practically unique identifier as a 32-character hexadecimal string without hyphens.
             request_id = uuid4().hex
 
             with langfuse.start_as_current_observation(
-                as_type="span",
+                as_type="span", # represents a timed operation, In this case, the operation is your entire RAG request
                 name="rag-request",
             ) as span:
                 with propagate_attributes(
                     trace_name="deep-agent-rag-workflow",
                     session_id=f"local-thread-{thread_number}",
-                    tags=["deepagents", "langgraph", "rag"],
+                    tags=["deepagents", "langgraph", "rag"], # Labels traces for filtering
                 ):
                     result = workflow.invoke(
                         {
@@ -395,7 +427,7 @@ def main():
                             "retrieval_context": [],
                         },
                         config={
-                            "callbacks": [langfuse_handler],
+                            "callbacks": [langfuse_handler], # It receives execution events from LangChain and LangGraph to create observations in your execution trace.
                             "run_name": "agentic-rag-workflow",
                         },
                     )
@@ -425,7 +457,7 @@ def main():
                         metadata={"attempts": result["attempts"]},
                     )
 
-            langfuse.flush()
+            langfuse.flush() # send queued data
 
             print("\nAttempts:", result["attempts"])
             print("\nEvaluation:", result["evaluation"])
