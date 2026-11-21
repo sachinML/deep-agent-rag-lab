@@ -31,20 +31,50 @@ def build_workflow(deep_agent, store):
 
         question = state["question"]
 
-        # Include evaluator feedback on retries
-        if attempt > 1:
-            feedback = state["evaluation"].get("feedback", "")
-            previous_answer = state["answer"]
 
-            question += (
-                "\n\nPREVIOUS ATTEMPT:\n"
-                f"{previous_answer}\n\n"
-                "EVALUATOR FEEDBACK:\n"
-                f"{feedback}\n\n"
-                "Revise the previous answer to address the evaluator's "
-                "feedback. Verify any questionable claims against "
-                "the knowledge base and preserve supported citations."
+        if attempt > 1:
+            previous_evaluation = state["evaluation"]
+            feedback = previous_evaluation.get("feedback", "")
+            checks = previous_evaluation.get("checks", {})
+
+            corrections = []
+
+            if not checks.get("has_evidence", True):
+                corrections.append(
+                    "MANDATORY: Delegate to research-agent using the "
+                    "task tool. The research-agent must call "
+                    "rag_search_chunks to retrieve supporting documents."
+                )
+
+            if not checks.get("has_citations", True):
+                corrections.append(
+                    "Include citations in the format [DOC-XXX] "
+                    "for claims supported by retrieved documents."
+                )
+
+            if not checks.get("valid_citations", True):
+                corrections.append(
+                    "Use only document IDs returned by the "
+                    "retrieval tool. Do not invent citations."
+                )
+
+            if previous_evaluation.get("score") is not None:
+                if previous_evaluation["score"] < 0.8:
+                    corrections.append(
+                        "Remove or revise claims unsupported by "
+                        "the retrieved evidence."
+                    )
+
+            correction_text = "\n".join(corrections)
+
+            question = (
+                f"{state['question']}\n\n"
+                f"Previous answer:\n{state['answer']}\n\n"
+                f"Evaluation feedback:\n{feedback}\n\n"
+                f"Required corrections:\n{correction_text}\n\n"
+                "Generate a corrected answer."
             )
+
 
         # Separate checkpoint history for each attempt
         attempt_thread_id = (

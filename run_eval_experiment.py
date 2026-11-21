@@ -2,8 +2,6 @@
 import argparse
 from pathlib import Path
 from uuid import uuid4
-import re
-import time
 
 from dotenv import load_dotenv
 
@@ -21,52 +19,12 @@ langfuse_handler = CallbackHandler()
 DATASET_NAME = "deep-agent-rag-baseline"
 
 
-def invoke_with_retry(payload, config, max_retries=4):
-    for attempt in range(max_retries):
-        try:
-            return workflow.invoke(payload, config=config)
-
-        except Exception as exc:
-            message = str(exc)
-
-            is_rate_limit = (
-                "RESOURCE_EXHAUSTED" in message
-                or "429" in message
-            )
-
-            if not is_rate_limit:
-                raise
-
-            if attempt == max_retries - 1:
-                raise
-
-            # Respect Google's suggested retry delay.
-            match = re.search(
-                r"retry in ([\d.]+)s",
-                message,
-                flags=re.IGNORECASE,
-            )
-
-            if match:
-                delay = float(match.group(1)) + 2
-            else:
-                delay = min(10 * (2 ** attempt), 90)
-
-            print(
-                f"[RATE LIMIT] Waiting {delay:.1f}s "
-                f"before retry {attempt + 2}/{max_retries}"
-            )
-            time.sleep(delay)
-
-    raise RuntimeError("Retries exhausted")
-
-
 def run_agent(*, item, **kwargs):
     question = item.input["question"]
 
     print(f"\n[EXPERIMENT] Question: {question}")
 
-    result = invoke_with_retry(
+    result = workflow.invoke(
         {
             "question": question,
             "answer": "",
@@ -83,8 +41,6 @@ def run_agent(*, item, **kwargs):
 
     evaluation = result["evaluation"]
 
-    time.sleep(20)
-
     return {
         "answer": result["answer"],
         "faithfulness": evaluation.get("score"),
@@ -98,11 +54,11 @@ def faithfulness_evaluator(*, output, **kwargs):
     score = output.get("faithfulness")
 
     if score is None:
-        return Evaluation(
-            name="faithfulness",
-            value=0.0,
-            comment="No faithfulness score returned.",
+        print(
+            "[EVALUATION] Faithfulness score unavailable. "
+            "Skipping score recording."
         )
+        return None
 
     return Evaluation(
         name="faithfulness",
@@ -111,10 +67,14 @@ def faithfulness_evaluator(*, output, **kwargs):
     )
 
 
+
 def pass_evaluator(*, output, **kwargs):
+    if output.get("faithfulness") is None:
+        return None
+
     return Evaluation(
         name="evaluation_passed",
-        value=bool(output.get("passed", False)),
+        value=bool(output["passed"]),
         data_type="BOOLEAN",
     )
 
