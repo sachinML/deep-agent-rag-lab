@@ -22,7 +22,7 @@ from langgraph.store.memory import InMemoryStore
 
 from knowledge import rag_search_chunks
 from workflow import build_workflow
-from evidence import evidence_collector
+from trajectory_evaluation import evaluate_trajectory
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -58,35 +58,35 @@ MODEL = ChatGoogleGenerativeAI(
 # 1. Custom middleware
 # --------------------------------------------------
 
+@wrap_tool_call # It is a Python decorator that registers your function as middleware for tool execution. It enables your function to surround a tool call.
+def log_tool_calls(request, handler):
+    """Log tool name, arguments and execution duration."""
 
+    import time
 
-# @wrap_tool_call # It is a Python decorator that registers your function as middleware for tool execution. It enables your function to surround a tool call.
-# def log_tool_calls(request, handler):
-#     """Log tool name, arguments and execution duration."""
+    tool_name = request.tool_call["name"]
+    tool_args = request.tool_call["args"]
 
-#     import time
+    print(f"\n[TOOL START] {tool_name}")
+    print(f"[ARGS] {tool_args}")
 
-#     tool_name = request.tool_call["name"]
-#     tool_args = request.tool_call["args"]
+    start = time.perf_counter()
 
-#     print(f"\n[TOOL] Name: {tool_name}")
-#     print(f"[TOOL] Arguments: {tool_args}")
+    try:
+        result = handler(request)
 
-#     start = time.perf_counter()
+        duration = time.perf_counter() - start # perf_counter() is a high-resolution clock suitable for measuring elapsed time.
 
-#     try:
-#         result = handler(request)
+        print(
+            f"[TOOL END] {tool_name} "
+            f"({duration:.2f}s)"
+        )
 
-#         duration = time.perf_counter() - start # perf_counter() is a high-resolution clock suitable for measuring elapsed time.
+        return result # The agent needs the tool result so that Gemini can use it to generate an answer.
 
-#         print(f"[TOOL] Success: {tool_name}")
-#         print(f"[TOOL] Duration: {duration:.3f}s")
-
-#         return result # The agent needs the tool result so that Gemini can use it to generate an answer.
-
-#     except Exception as error:
-#         print(f"[TOOL] Error: {error}")
-#         raise
+    except Exception as error:
+        print(f"[TOOL FAILED] {tool_name}: {error}")
+        raise
 
 # request contains details about the requested tool call and relevant runtime information.
 # handler is the callable that continues the wrapped execution.
@@ -101,7 +101,7 @@ MODEL = ChatGoogleGenerativeAI(
 #     "type": "tool_call"
 # }
 
-#This line continues the tool execution through the remaining middleware and the tool implementation.
+# This line continues the tool execution through the remaining middleware and the tool implementation.
 
 # result = handler(request) This line continues the tool execution through the remaining middleware and the tool implementation.
 # Without calling the handler, your code would not execute the tool normally.
@@ -113,44 +113,6 @@ MODEL = ChatGoogleGenerativeAI(
 # - Modify returned results.
 # - Replace execution with a valid alternative response.
 # But your current middleware performs logging only.
-
-
-
-
-@wrap_tool_call
-def log_tool_calls(request, handler):
-    import time
-
-    tool_name = request.tool_call["name"]
-    tool_args = request.tool_call["args"]
-
-    print(f"\n[TOOL START] {tool_name}")
-    print(f"[ARGS] {tool_args}")
-
-    start = time.perf_counter()
-
-    try:
-        result = handler(request)
-
-        duration = time.perf_counter() - start
-
-        # Capture retrieval evidence for evaluation
-        if tool_name == "rag_search_chunks":
-            content = result.content
-
-            if isinstance(content, str):
-                evidence_collector.add(content)
-
-        print(
-            f"[TOOL END] {tool_name} "
-            f"({duration:.2f}s)"
-        )
-
-        return result
-
-    except Exception as error:
-        print(f"[TOOL FAILED] {tool_name}: {error}")
-        raise
 
 
 # --------------------------------------------------
@@ -244,7 +206,38 @@ acting as the main supervisor agent.
 You help users understand retrieval, RAG architecture,
 embedding models, reranking, and LLM evaluation.
 
+CORRECTION POLICY:
+
+When receiving a CORRECTION REQUEST:
+
+1. Review the previous answer and evaluation feedback.
+2. Inspect any previously retrieved evidence supplied.
+3. If that evidence is sufficient, revise the answer
+   without delegating new research.
+4. If evidence is missing or insufficient, delegate
+   to research-agent to obtain additional documents.
+5. Cite only documents supporting the final answer.
+
+This policy takes precedence over mandatory initial
+research delegation when evidence is already supplied.
+
 BEHAVIOR:
+
+IMPORTANT RETRY POLICY:
+
+If the user message explicitly identifies itself as a
+CORRECTION attempt and includes previously retrieved
+document evidence:
+
+- First attempt to correct the answer using that evidence.
+- Do not repeat research simply because the question is technical.
+- Delegate to research-agent again only when the existing
+  evidence is genuinely insufficient or additional facts
+  are required.
+- Never invent missing information.
+
+This correction policy takes precedence over the
+mandatory initial-retrieval instructions below.
 
 1. Simple questions:
    For greetings, conversational questions, or requests
@@ -274,6 +267,20 @@ BEHAVIOR:
 
    If research-agent returns insufficient evidence,
    acknowledge the limitation rather than inventing facts.
+
+
+RESEARCH EFFICIENCY POLICY:
+
+- Match research depth to the user's requested scope.
+- For simple definition questions, request only the essential
+  definition and directly relevant supporting evidence.
+- Do not expand a simple question into research on formulas,
+  parameters, comparisons, or applications unless requested.
+- For complex comparison questions, broader research is allowed.
+- Avoid repeated retrieval when the available evidence already
+  answers the delegated research task.
+- Delegate only the necessary work to the research agent.
+
 
 3. Complex research questions:
    Delegate document research and comparisons to
@@ -462,6 +469,28 @@ def main():
             print("\nAttempts:", result["attempts"])
             print("\nEvaluation:", result["evaluation"])
 
+
+            # 1. Display the actual tool execution trajectory
+            print("\n=== AGENT TRAJECTORY ===")
+
+            for event in result.get("trajectory", []):
+                print(
+                    f"Attempt {event['attempt']} | "
+                    f"Tool: {event['tool']} | "
+                    f"Status: {event['status']}"
+                )
+
+            # 2. Evaluate tool usage and efficiency
+            trajectory_result = evaluate_trajectory(
+                trajectory=result.get("trajectory", []),
+                required_tools=["task", "rag_search_chunks"],
+                max_retrieval_calls=2,
+            )
+
+            print("\n=== TRAJECTORY EVALUATION ===")
+            print(trajectory_result)
+
+            # 3. Display the final agent answer
             if result["evaluation"]["passed"]:
                 print("\nAgent:")
                 print(result["answer"])
@@ -469,6 +498,7 @@ def main():
                 print("\nAgent:")
                 print("Unable to produce a validated answer.")
 
+            # 4. Display the task plan, if one exists
             if result.get("todos"):
                 print("\nTask plan:")
                 for todo in result["todos"]:
