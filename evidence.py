@@ -6,11 +6,10 @@ import json
 
 
 class EvidenceCollector:
-    def __init__(self):
-        self.chunks = []
+    """Parse and deduplicate retrieved knowledge-base documents."""
 
-    def clear(self):
-        self.chunks.clear()
+    def __init__(self):
+        self.chunks: list[str] = []
 
     def add(self, content):
         if isinstance(content, str) and content.strip():
@@ -53,7 +52,3 @@ class EvidenceCollector:
             f"[{doc['id']}] {doc['title']}\n{doc['content']}"
             for doc in self.get_documents()
         ]
-
-
-evidence_collector = EvidenceCollector()
-
