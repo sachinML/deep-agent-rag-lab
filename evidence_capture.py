@@ -1,9 +1,11 @@
+# This code is responsible for capturing what your Deep Agent does during execution
+# and collecting the documents retrieved by its research subagent.
 
 from threading import Lock
 from uuid import UUID
 import json
 
-from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler # LangChain interface that lets your code respond to events during execution.
 
 from evidence import EvidenceCollector
 
@@ -13,10 +15,10 @@ class RequestEvidenceCollector(BaseCallbackHandler):
 
     def __init__(self):
         super().__init__()
-        self._lock = Lock()
-        self._tool_runs: dict[UUID, str] = {}
-        self._outputs: list[str] = []
-        self._trajectory: list[dict] = []
+        self._lock = Lock() # Protects shared data within this collector from simultaneous modifications by threads
+        self._tool_runs: dict[UUID, str] = {} # Maps each running tool's unique ID to its name
+        self._outputs: list[str] = [] # Stores raw retrieval responses
+        self._trajectory: list[dict] = [] # Stores the sequence and status of tool calls
 
     def on_tool_start(
         self,
@@ -26,11 +28,13 @@ class RequestEvidenceCollector(BaseCallbackHandler):
         run_id: UUID,
         **kwargs,
     ) -> None:
+        # identifies the tool
         tool_name = kwargs.get("name") or (
             serialized.get("name") if serialized else ""
         )
 
         with self._lock:
+            # records the running tool
             self._tool_runs[run_id] = tool_name or ""
 
             # Record the action, without storing the full

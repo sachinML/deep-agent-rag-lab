@@ -422,6 +422,8 @@ def main():
                     session_id=f"local-thread-{thread_number}",
                     tags=["deepagents", "langgraph", "rag"], # Labels traces for filtering
                 ):
+                    # print("[DEBUG] workflow type:", type(workflow))
+                    # print("[DEBUG] workflow value:", workflow)
                     result = workflow.invoke(
                         {
                             "question": question,
@@ -438,7 +440,7 @@ def main():
                             "run_name": "agentic-rag-workflow",
                         },
                     )
-
+                    # config carries the settings → callbacks registers observers → CallbackHandler defines what each observer does when events occur.
                     evaluation = result["evaluation"]
 
                     # Save the quality score on this trace.

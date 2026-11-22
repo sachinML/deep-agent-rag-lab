@@ -25,6 +25,7 @@ class WorkflowState(TypedDict):
     retrieval_context: list[str]
     retrieval_changed: NotRequired[bool]
     trajectory: NotRequired[list[dict]]
+    attempt_history: NotRequired[list[dict]]
 
     # Retrieval evaluation result
     retrieval_evaluation: NotRequired[dict]
@@ -140,8 +141,6 @@ def build_failure_retry_message(state: WorkflowState) -> str:
             """
 
     return question
-
-
 
 
 def build_workflow(deep_agent, store):
@@ -389,10 +388,49 @@ def build_workflow(deep_agent, store):
 
         print(f"[FAILURE CLASSIFICATION] {failure_type}")
 
+        # Store the answer and evaluation for this attempt.
+        attempt_record = {
+            "attempt": state["attempts"],
+            "answer": answer,
+            "score": evaluation["score"],
+            "passed": evaluation["passed"],
+            "feedback": evaluation["feedback"],
+            "failure_type": failure_type,
+            "checks": dict(evaluation["checks"]),
+            "citations": list(evaluation["citations"]),
+        }
+
+        attempt_history = [
+            *state.get("attempt_history", []),
+            attempt_record,
+        ]
+
+        print(
+            f"[ATTEMPT HISTORY] Recorded attempt "
+            f"{state['attempts']} "
+            f"(score={evaluation['score']:.4f})"
+        )
+
         return {
             "evaluation": evaluation,
             "failure_type": failure_type,
+            "attempt_history": attempt_history,
         }
+
+    def print_attempt_history(state: WorkflowState) -> None:
+        history = state.get("attempt_history", [])
+
+        print("\n=== GENERATION ATTEMPT HISTORY ===")
+
+        for record in history:
+            print(f"\n--- Attempt {record['attempt']} ---")
+            print(f"Answer:\n{record['answer']}")
+            print(f"Faithfulness score: {record['score']:.4f}")
+            print(f"Passed: {record['passed']}")
+            print(f"Failure type: {record['failure_type']}")
+            print(f"Checks: {record['checks']}")
+            print(f"Citations: {record['citations']}")
+            print(f"Feedback: {record['feedback']}")
 
     def route_after_evaluation(state: WorkflowState) -> str:
         failure_type = state.get("failure_type")
@@ -400,6 +438,7 @@ def build_workflow(deep_agent, store):
 
         if failure_type == "PASSED":
             print("[ROUTER] Passed → END")
+            print_attempt_history(state)
             return "end"
 
         if attempts >= MAX_ATTEMPTS:
@@ -407,6 +446,7 @@ def build_workflow(deep_agent, store):
                 f"[ROUTER] {failure_type}; "
                 "maximum attempts reached → END"
             )
+            print_attempt_history(state)
             return "end"
 
         print(

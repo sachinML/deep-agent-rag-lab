@@ -1,0 +1,80 @@
+
+[
+  {
+    "id": "Q01",
+    "question": "How does RAG access external knowledge?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0062",
+      "b38452e1bcc1a239-0011",
+      "b38452e1bcc1a239-0020"
+    ]
+  },
+  {
+    "id": "Q02",
+    "question": "What is non-parametric memory in RAG?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0003",
+      "b38452e1bcc1a239-0006"
+    ]
+  },
+  {
+    "id": "Q03",
+    "question": "How does the retriever improve question answering?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0052"
+    ]
+  },
+  {
+    "id": "Q04",
+    "question": "What happens when the knowledge index is replaced?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0010",
+      "b38452e1bcc1a239-0056",
+      "b38452e1bcc1a239-0057"
+    ]
+  },
+  {
+    "id": "Q05",
+    "question": "What knowledge source was used in the RAG experiments?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0020"
+    ]
+  },
+  {
+    "id": "Q06",
+    "question": "What are the retriever and generator components of RAG?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0011",
+      "b38452e1bcc1a239-0005"
+    ]
+  },
+  {
+    "id": "Q07",
+    "question": "What is retrieval collapse in RAG?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0097"
+    ]
+  },
+  {
+    "id": "Q08",
+    "question": "How does RAG compare with BART on abstractive question answering?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0038"
+    ]
+  },
+  {
+    "id": "Q09",
+    "question": "What happens when BM25 replaces the learned retriever?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0053"
+    ]
+  },
+  {
+    "id": "Q10",
+    "question": "Why are retrieved passages useful for generating answers?",
+    "relevant_chunk_ids": [
+      "b38452e1bcc1a239-0011",
+      "b38452e1bcc1a239-0005"
+    ]
+  }
+]

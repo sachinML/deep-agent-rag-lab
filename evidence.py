@@ -1,7 +1,6 @@
 # Capture retrieval tool results
 # This is a simple in-memory collector. It stores retrieval tool responses for evaluation.
 
-
 import json
 
 
