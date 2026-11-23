@@ -1,83 +1,101 @@
 
 import json
-import re
-from pathlib import Path
+import os
+from functools import lru_cache
 
+# Public Hugging Face models: don't use expired implicit credentials.
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+
+from elasticsearch import Elasticsearch
 from langchain.tools import tool
+from sentence_transformers import SentenceTransformer, CrossEncoder
+
+from retrieval.compare import ES_URL, MODEL_NAME, INDEX_NAME
+from retrieval.reranker import (
+    RERANKER_MODEL,
+    hybrid_rerank_search,
+)
 
 
-DATA_PATH = Path(__file__).parent / "data" / "knowledge.json"
+@lru_cache(maxsize=1)
+def get_es_client() -> Elasticsearch:
+    es = Elasticsearch(ES_URL, request_timeout=60)
 
-STOP_WORDS = {
-    "the", "a", "an", "is", "are", "what", "how",
-    "of", "to", "in", "for", "and", "or", "does",
-    "with", "between", "explain", "compare"
-}
+    if not es.ping():
+        raise ConnectionError(
+            "Elasticsearch is unavailable at " + ES_URL
+        )
 
-
-def tokenize(text: str) -> set[str]:
-    """Convert text into normalized search terms."""
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return set(words) - STOP_WORDS
+    return es
 
 
-def load_documents() -> list[dict]:
-    """Load documents from our local knowledge base."""
-    with DATA_PATH.open(encoding="utf-8") as file:
-        return json.load(file)
+@lru_cache(maxsize=1)
+def get_embedding_model() -> SentenceTransformer:
+    return SentenceTransformer(MODEL_NAME)
+
+
+@lru_cache(maxsize=1)
+def get_reranker() -> CrossEncoder:
+    return CrossEncoder(RERANKER_MODEL)
 
 
 def search_documents(query: str, k: int = 3) -> list[dict]:
-    """
-    Retrieve top-k documents based on keyword overlap.
+    """Search indexed chunks using hybrid retrieval and reranking."""
 
-    This is a deliberately simple retriever.
-    It does not use embeddings or a vector database.
-    """
-    if k < 1:
-        raise ValueError("k must be at least 1")
-
-    query_terms = tokenize(query)
-
-    if not query_terms:
+    if not query.strip():
         return []
 
-    ranked = []
+    if not 1 <= k <= 10:
+        raise ValueError("k must be between 1 and 10")
 
-    for doc in load_documents():
-        title_terms = tokenize(doc["title"])
-        content_terms = tokenize(doc["content"])
-
-        title_overlap = len(query_terms & title_terms)
-        content_overlap = len(query_terms & content_terms)
-
-        score = 3 * title_overlap + content_overlap
-
-        if score > 0:
-            ranked.append({
-                **doc,
-                "score": score,
-            })
-
-    ranked.sort(
-        key=lambda item: (-item["score"], item["id"])
+    results = hybrid_rerank_search(
+        es=get_es_client(),
+        embedding_model=get_embedding_model(),
+        reranker=get_reranker(),
+        question=query,
+        k=k,
+        candidate_k=20,
     )
 
-    return ranked[:k]
+    documents = []
+
+    for result in results:
+        source = result["document"]
+        metadata = source.get("metadata", {})
+
+        chunk_id = source["chunk_id"]
+
+        documents.append({
+            # Required by our evidence collector.
+            "id": chunk_id,
+            "title": source.get("title", ""),
+            "content": source["content"],
+
+            # Chunk-level provenance.
+            "chunk_id": chunk_id,
+            "document_id": source.get("document_id"),
+            "source": metadata.get("source", ""),
+            "section": metadata.get("section", {}),
+
+            # Diagnostic metadata.
+            "rerank_score": result["rerank_score"],
+            "rrf_score": result["score"],
+        })
+
+    return documents
 
 
 @tool
 def rag_search_chunks(query: str, k: int = 3) -> str:
     """
-    Search the local RAG knowledge base.
+    Search the indexed research knowledge base using hybrid
+    BM25 + dense retrieval followed by cross-encoder reranking.
 
-    Use this tool when answering technical questions about
-    RAG, retrieval, BM25, embeddings, reranking, RAGAS
-    or DeepEval. Returns document IDs and relevant evidence.
+    Use this tool for questions about concepts or experiments
+    covered by the indexed documents.
+
+    Returns relevant chunks with IDs suitable for citations.
     """
     results = search_documents(query=query, k=k)
 
-    if not results:
-        return "No relevant documents found."
-
-    return json.dumps(results, indent=2)
+    return json.dumps(results, ensure_ascii=False)

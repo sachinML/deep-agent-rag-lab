@@ -1,11 +1,10 @@
 # Capture retrieval tool results
 # This is a simple in-memory collector. It stores retrieval tool responses for evaluation.
 
+
 import json
-
-
 class EvidenceCollector:
-    """Parse and deduplicate retrieved knowledge-base documents."""
+    """Parse and deduplicate retrieved chunks by unique chunk ID."""
 
     def __init__(self):
         self.chunks: list[str] = []
@@ -15,7 +14,7 @@ class EvidenceCollector:
             if content not in self.chunks:
                 self.chunks.append(content)
 
-    def get_documents(self):
+    def get_documents(self) -> list[dict]:
         documents = {}
 
         for response in self.chunks:
@@ -31,22 +30,31 @@ class EvidenceCollector:
                 if not isinstance(item, dict):
                     continue
 
-                doc_id = item.get("id")
+                chunk_id = item.get("chunk_id") or item.get("id")
                 content = item.get("content")
 
-                if not doc_id or not isinstance(content, str):
+                if (
+                    not isinstance(chunk_id, str)
+                    or not chunk_id
+                    or not isinstance(content, str)
+                    or not content.strip()
+                ):
                     continue
 
-                if doc_id not in documents:
-                    documents[doc_id] = {
-                        "id": doc_id,
+                if chunk_id not in documents:
+                    documents[chunk_id] = {
+                        "id": chunk_id,
+                        "chunk_id": chunk_id,
+                        "document_id": item.get("document_id"),
                         "title": item.get("title", ""),
                         "content": content,
+                        "source": item.get("source", ""),
+                        "section": item.get("section", {}),
                     }
 
         return list(documents.values())
 
-    def get_context(self):
+    def get_context(self) -> list[str]:
         return [
             f"[{doc['id']}] {doc['title']}\n{doc['content']}"
             for doc in self.get_documents()
