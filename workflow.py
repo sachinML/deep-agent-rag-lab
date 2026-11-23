@@ -10,9 +10,6 @@ from retrieval_evaluation import (
 )
 from langchain_core.runnables import RunnableConfig
 
-import time
-from litellm.exceptions import RateLimitError
-
 
 MAX_ATTEMPTS = 2  # Initial attempt + 1 retries
 
@@ -34,51 +31,29 @@ class WorkflowState(TypedDict):
     failure_type: NotRequired[str | None]
 
 
-def run_with_groq_retry(
-    evaluation_fn,
-    *args,
-    max_retries=4,
-    **kwargs,
-):
-    """Retry a rate-limited judge call without regenerating the answer."""
-
-    for attempt in range(max_retries + 1):
-        try:
-            return evaluation_fn(*args, **kwargs)
-
-        except RateLimitError:
-            if attempt == max_retries:
-                raise
-
-            delay = min(10 * (2 ** attempt), 60)
-
-            print(
-                f"[GROQ RATE LIMIT] Waiting {delay}s "
-                f"before retry {attempt + 1}/{max_retries}"
-            )
-
-            time.sleep(delay)
-
 
 def classify_failure(state: WorkflowState) -> str:
-    """Classify the next action using retrieval and answer evaluations."""
+    """Classify retrieval and generation failures."""
 
     retrieval_eval = state.get("retrieval_evaluation", {})
     answer_eval = state.get("evaluation", {})
 
+    relevant = retrieval_eval.get("relevant", False)
     sufficient = retrieval_eval.get("sufficient", False)
     answer_passed = answer_eval.get("passed", False)
 
-    if sufficient and answer_passed:
-        return "PASSED"
-
-    if sufficient and not answer_passed:
-        return "GENERATION_FAILURE"
-
-    if not sufficient:
+    # Missing, irrelevant or insufficient evidence:
+    # the retrieval process needs improvement.
+    if not relevant or not sufficient:
         return "RETRIEVAL_FAILURE"
 
-    return "UNKNOWN"
+    # Evidence is adequate, but the answer failed
+    # faithfulness or structural checks.
+    if not answer_passed:
+        return "GENERATION_FAILURE"
+
+    return "PASSED"
+
 
 
 def build_failure_retry_message(state: WorkflowState) -> str:
@@ -278,14 +253,12 @@ def build_workflow(deep_agent, store):
         question = state["question"]
         context = state["retrieval_context"]
 
-        relevancy = run_with_groq_retry(
-            evaluate_retrieval,
+        relevancy = evaluate_retrieval(
             question=question,
             retrieval_context=context,
         )
 
-        sufficiency = run_with_groq_retry(
-            evaluate_sufficiency,
+        sufficiency = evaluate_sufficiency(
             question=question,
             retrieval_context=context,
         )
@@ -314,24 +287,31 @@ def build_workflow(deep_agent, store):
         answer = state["answer"]
         retrieval_context = state["retrieval_context"]
 
+
+        # Support the original synthetic DOC IDs and the new
+        # Elasticsearch chunk IDs during migration.
+        citation_pattern = (
+            r"(?:DOC-\d{3}|[a-f0-9]{16}-\d{4})"
+        )
+
         citations = sorted(set(
-            re.findall(r"\bDOC-\d{3}\b", answer)
+            re.findall(
+                rf"\[({citation_pattern})\]",
+                answer,
+            )
         ))
 
         retrieved_ids = {
             match
             for passage in retrieval_context
             for match in re.findall(
-                r"\[DOC-\d{3}\]", passage
+                rf"\[({citation_pattern})\]",
+                passage,
             )
         }
 
-        cited_ids = {
-            f"[{doc_id}]" for doc_id in citations
-        }
-
         unknown_citations = sorted(
-            cited_ids - retrieved_ids
+            set(citations) - retrieved_ids
         )
 
         checks = {
@@ -360,8 +340,7 @@ def build_workflow(deep_agent, store):
             }
 
         else:
-            faithfulness = run_with_groq_retry(
-                evaluate_faithfulness,
+            faithfulness = evaluate_faithfulness(
                 question=state["question"],
                 answer=answer,
                 retrieval_context=retrieval_context,

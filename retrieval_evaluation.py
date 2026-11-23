@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 RETRIEVAL_RELEVANCY_THRESHOLD = 0.7
 
 
-class GroqContextualRelevancyTemplate(ContextualRelevancyTemplate):
+class CustomContextualRelevancyTemplate(ContextualRelevancyTemplate):
     @staticmethod
     def generate_verdicts(input: str, context: str):
         return f"""
@@ -86,7 +86,7 @@ def evaluate_retrieval(
         include_reason=True,
         async_mode=False,
         verbose_mode=False,
-        evaluation_template=GroqContextualRelevancyTemplate,
+        evaluation_template=CustomContextualRelevancyTemplate,
     )
 
     metric.measure(test_case)
@@ -125,52 +125,72 @@ def evaluate_sufficiency(
     context_text = "\n\n".join(retrieval_context)
 
     prompt = f"""
-You are an evidence sufficiency evaluator for a RAG system.
+        You are an evidence sufficiency evaluator for a RAG system.
 
-Your task is to determine whether the retrieved evidence
-contains enough information to answer the user's question.
+        Your task is to determine whether the retrieved evidence
+        contains enough information to answer the user's question.
 
-Evaluation rules:
+        Evaluation rules:
 
-1. Identify all essential parts of the user's question.
+        1. Identify all essential parts of the user's question.
 
-2. Evaluate ONLY the supplied retrieved evidence.
-   Do not use your own knowledge to fill missing information.
+        2. Evaluate ONLY the supplied retrieved evidence.
+        Do not use your own knowledge to fill missing information.
 
-3. Return sufficient=true ONLY if the evidence contains
-   enough facts to answer all essential parts of the question.
+        3. Return sufficient=true ONLY if the evidence contains
+        enough facts to answer all essential parts of the question.
 
-4. Return sufficient=false if important information is
-   missing, even when some retrieved passages are relevant.
+        4. Return sufficient=false if important information is
+        missing, even when some retrieved passages are relevant.
 
-5. For comparison questions, both subjects must have
-   adequate supporting evidence.
+        5. For comparison questions, both subjects must have
+        adequate supporting evidence.
 
-6. An answer saying "I don't know" does not make
-   the retrieved evidence sufficient.
+        6. An answer saying "I don't know" does not make
+        the retrieved evidence sufficient.
 
-7. Explain your decision clearly.
+        7. Explain your decision clearly.
 
-Return a JSON object with BOTH required fields:
-- "sufficient": boolean
-- "reason": non-empty explanation
+        Return a JSON object with BOTH required fields:
+        - "sufficient": boolean
+        - "reason": non-empty explanation
 
-Do not omit either field.
+        Do not omit either field.
 
-USER QUESTION:
-{question}
+        USER QUESTION:
+        {question}
 
-RETRIEVED EVIDENCE:
-{context_text}
-"""
+        RETRIEVED EVIDENCE:
+        {context_text}
+        """
 
-    verdict, _cost = judge_model.generate(
+
+    result = judge_model.generate(
         prompt,
         schema=EvidenceSufficiencyVerdict,
     )
+
+    # Accommodate DeepEval model adapters that return
+    # either the verdict or (verdict, cost).
+    verdict = result[0] if isinstance(result, tuple) else result
+
+    if isinstance(verdict, dict):
+        verdict = EvidenceSufficiencyVerdict.model_validate(verdict)
+
+    if not isinstance(verdict, EvidenceSufficiencyVerdict):
+        raise TypeError(
+            "Unexpected sufficiency judge output: "
+            f"{type(verdict).__name__}"
+        )
+
+    if not verdict.reason.strip():
+        raise ValueError(
+            "Sufficiency judge returned an empty reason."
+        )
 
     return {
         "sufficient": verdict.sufficient,
         "score": 1.0 if verdict.sufficient else 0.0,
         "feedback": verdict.reason,
     }
+

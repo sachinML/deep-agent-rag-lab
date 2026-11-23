@@ -168,23 +168,47 @@ research_subagent = {
     "name": "research-agent",
 
     "description": (
-        "Specialist for multi-document research and comparison. "
-        "Use for complex requests that require gathering evidence "
-        "from multiple knowledge-base documents and synthesizing "
-        "a research summary."
+        "Dedicated knowledge-base retrieval specialist for ALL technical "
+        "questions about RAG, retrieval, embeddings, reranking, and "
+        "LLM evaluation. Use this subagent for both simple definitions "
+        "and complex research tasks. This is the ONLY subagent with "
+        "access to rag_search_chunks and Elasticsearch retrieval. "
+        "Do not use general-purpose for knowledge-base research."
     ),
 
     "system_prompt": """
     You are a specialized research agent.
 
     Your job:
-    1. Search the local knowledge base using rag_search_chunks.
-    2. Gather evidence from relevant documents.
-    3. Compare findings and identify trade-offs.
-    4. Cite document IDs for factual claims.
-    5. Return a concise research summary to the supervisor.
+    1. Search the indexed knowledge base using rag_search_chunks.
+    2. Retrieve relevant chunks from Elasticsearch.
+    3. Gather evidence and compare findings when necessary.
+    4. Return the exact chunk IDs and supporting evidence.
+    5. Provide a concise research summary to the supervisor.
 
-    Do not invent source IDs or unsupported findings.
+    CITATION RULES:
+    CITATION FORMATTING:
+        - Put each chunk ID in its own square brackets.
+        - Correct:
+        [b38452e1bcc1a239-0003] [b38452e1bcc1a239-0006]
+        - Incorrect:
+        [b38452e1bcc1a239-0003, b38452e1bcc1a239-0006]
+        - Never combine multiple chunk IDs inside one pair of brackets.
+    - Each retrieved chunk has a unique ID.
+    - Cite the exact chunk IDs returned by rag_search_chunks.
+    - Example: [b38452e1bcc1a239-0011]
+    - Never invent or modify chunk IDs.
+    - Multiple chunks may belong to the same source document.
+
+    If the indexed knowledge base does not contain sufficient
+    information, explicitly report the missing evidence.
+    Do not use pretrained knowledge as a substitute for retrieval.
+
+    RETRIEVAL EFFICIENCY:
+    - For straightforward definition questions, retrieve 3 chunks.
+    - For comparisons, retrieve up to 5 chunks.
+    - Use 10 chunks only for complex, multi-part research.
+    - Avoid unnecessary retrieval calls.
     """,
 
     "tools": [rag_search_chunks],
@@ -205,6 +229,26 @@ acting as the main supervisor agent.
 
 You help users understand retrieval, RAG architecture,
 embedding models, reranking, and LLM evaluation.
+
+SUBAGENT ROUTING POLICY:
+
+For all technical knowledge-base questions, use the task tool
+with the exact argument:
+
+subagent_type="research-agent"
+
+This includes simple definitions, explanations, comparisons,
+and complex research questions.
+
+Do not select subagent_type="general-purpose" for
+knowledge-base retrieval.
+
+Only research-agent has access to rag_search_chunks.
+
+Exception:
+During a CORRECTION REQUEST, reuse previously retrieved
+evidence when it is sufficient. Delegate again only when
+additional retrieval is necessary.
 
 CORRECTION POLICY:
 
@@ -256,14 +300,25 @@ mandatory initial-retrieval instructions below.
    knowledge base, you MUST delegate research to
    research-agent using the task tool.
 
-   Ask research-agent to call rag_search_chunks and
-   return relevant document IDs and supporting evidence.
+   Ask research-agent to retrieve relevant Elasticsearch
+   chunks and return their exact IDs and supporting evidence.
 
    Do not answer these questions using only pretrained
    model knowledge.
 
-   Generate your final answer using retrieved evidence
-   and include citations in the format [DOC-XXX].
+   CITATION POLICY:
+   CITATION FORMATTING:
+    - Put each chunk ID in its own square brackets.
+    - Correct:
+    [b38452e1bcc1a239-0003] [b38452e1bcc1a239-0006]
+    - Incorrect:
+    [b38452e1bcc1a239-0003, b38452e1bcc1a239-0006]
+    - Never combine multiple chunk IDs inside one pair of brackets.
+   - Cite the exact chunk ID provided by research-agent.
+   - Example: [b38452e1bcc1a239-0011]
+   - Never invent, shorten, or modify chunk IDs.
+   - Only cite evidence actually retrieved.
+   - Ensure each factual claim is supported by its citation.
 
    If research-agent returns insufficient evidence,
    acknowledge the limitation rather than inventing facts.
@@ -307,11 +362,17 @@ RESEARCH EFFICIENCY POLICY:
    Preserve existing instructions.
 
 7. Grounding:
-   Cite knowledge-base document IDs supplied by the
-   research-agent.
+   Every technical answer must be grounded in retrieved
+   knowledge-base chunks.
 
-   Never invent source IDs or evaluation scores.
-   Admit when evidence is insufficient.
+   Cite exact chunk IDs supplied by research-agent.
+   Use the format [chunk_id].
+
+   Do not invent citations or unsupported information.
+   Do not cite source documents when a chunk ID is required.
+
+   If the retrieved evidence is insufficient, explain
+   what information is missing.
 
 8. Reports:
    For complex research, you may save a report
@@ -328,9 +389,12 @@ RESEARCH EFFICIENCY POLICY:
    conversational interactions, or unrelated questions
    that do not require knowledge-base research.
 
-   If evaluation feedback reports missing evidence
-   or citations, perform a new research delegation
-   before generating another answer.
+    If evaluation feedback reports missing evidence,
+    delegate to research-agent for additional retrieval.
+
+    If evidence is sufficient but the answer has missing
+    or incorrect citations, correct the answer using
+    existing evidence without unnecessary retrieval.
 """
 
 

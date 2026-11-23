@@ -1,33 +1,80 @@
+
 import os
 from pathlib import Path
-
 from dotenv import load_dotenv
-from deepeval.metrics import FaithfulnessMetric
-from deepeval.test_case import LLMTestCase
-from deepeval.models import LiteLLMModel
-from deepeval.metrics.faithfulness import FaithfulnessTemplate
 
-# Load environment variables before initializing the judge
+# Load project environment configuration.
 load_dotenv(
     Path(__file__).resolve().parent / ".env",
     override=True,
 )
 
-# Validate Groq credentials
-groq_api_key = os.getenv("GROQ_API_KEY")
+from deepeval.models import OllamaModel
 
-if not groq_api_key:
-    raise RuntimeError(
-        "GROQ_API_KEY is missing. Check your .env file."
-    )
+from deepeval.metrics import FaithfulnessMetric
+from deepeval.test_case import LLMTestCase
+from deepeval.models import OllamaModel
+from deepeval.metrics.faithfulness import FaithfulnessTemplate
 
-judge_model = LiteLLMModel(
-    model="groq/openai/gpt-oss-120b",
-    api_key=os.environ["GROQ_API_KEY"],
+
+
+
+
+# # Shared local evaluation judge.
+# judge_model = OllamaModel(
+#     model=os.getenv("OLLAMA_JUDGE_MODEL", "qwen3:8b"),
+#     base_url=os.getenv(
+#         "OLLAMA_BASE_URL",
+#         "http://localhost:11434",
+#     ),
+#     temperature=0,
+# )
+
+
+class NonThinkingOllamaModel(OllamaModel):
+    """DeepEval judge using Ollama with thinking disabled."""
+
+    def generate(self, prompt, schema=None, audio=None):
+        chat_model = self.load_model()
+
+        messages = self._prompt_messages(prompt, audio)
+
+        response = chat_model.chat(
+            model=self.name,
+            messages=messages,
+            think=False,
+            format=(
+                schema.model_json_schema()
+                if schema is not None
+                else None
+            ),
+            options={
+                "temperature": self.temperature,
+                **self.generation_kwargs,
+            },
+        )
+
+        result = (
+            schema.model_validate_json(response.message.content)
+            if schema is not None
+            else response.message.content
+        )
+
+        return result, 0
+
+
+
+judge_model = NonThinkingOllamaModel(
+    model=os.getenv("OLLAMA_JUDGE_MODEL", "qwen3:8b"),
+    base_url=os.getenv(
+        "OLLAMA_BASE_URL",
+        "http://localhost:11434",
+    ),
+    temperature=0,
 )
 
 
-class GroqFaithfulnessTemplate(FaithfulnessTemplate): # as groq is not follwing the deepeval template and showing error
+class CustomFaithfulnessTemplate(FaithfulnessTemplate):
     @staticmethod
     def generate_verdicts(*args, **kwargs):
         original_prompt = FaithfulnessTemplate.generate_verdicts(
@@ -36,31 +83,95 @@ class GroqFaithfulnessTemplate(FaithfulnessTemplate): # as groq is not follwing 
 
         return original_prompt + """
 
-        IMPORTANT JSON OUTPUT REQUIREMENT:
+        STRICT EVIDENCE-GROUNDING RULES:
 
-        Every object in the verdicts array MUST include
-        BOTH fields:
-        - verdict
-        - reason
+        Evaluate every claim using ONLY the supplied
+        retrieval context.
 
-        Include a reason for ALL verdicts, including "yes".
+        1. A claim is supported only when the evidence
+           explicitly states it or clearly entails it.
 
-        Correct:
+        2. Absence of contradiction is NOT evidence
+           of support.
+
+        3. If a claim introduces a specific algorithm,
+           model, number, product, date, or technical fact
+           that is not established by the evidence,
+           mark the claim as "no".
+
+        4. Do not use pretrained knowledge to fill
+           gaps in the retrieval context.
+
+        5. Do not assume a claim is correct simply
+           because it sounds plausible.
+
+        EXAMPLE:
+
+        Retrieved evidence:
+        "The system retrieves passages from an index."
+
+        Answer claim:
+        "The system uses BM25."
+
+        Correct verdict:
         {
             "verdicts": [
                 {
-                    "verdict": "yes",
-                    "reason": "The claim is supported by the context."
-                },
-                {
-                    "verdict": "borderline",
-                    "reason": "The evidence is incomplete."
+                    "verdict": "no",
+                    "reason": "The evidence does not identify BM25 as the retrieval algorithm."
                 }
             ]
         }
 
-        Never omit the reason field.
+        SEMANTIC ENTAILMENT RULES:
+
+        Evaluate the meaning of claims, not exact wording.
+
+        1. Accept faithful paraphrases and summaries when
+           the retrieved evidence clearly entails them.
+
+        2. If the evidence states that a system uses both
+           method A and method B, a claim that it combines
+           A and B may be supported when "combines" simply
+           means both methods are used.
+
+        3. Do NOT infer implementation details that are
+           absent from the evidence, such as a specific
+           fusion algorithm, weighting scheme, or architecture.
+
+        4. Distinguish between:
+           - Supported paraphrases.
+           - Unsupported additional technical details.
+
+        EXAMPLE:
+
+        Retrieved evidence:
+        "The pipeline uses lexical and dense vector search."
+
+        Answer claim:
+        "The pipeline combines lexical and dense retrieval."
+
+        Correct verdict:
+        {
+            "verdicts": [
+                {
+                    "verdict": "yes",
+                    "reason": "The context establishes that both retrieval methods are used."
+                }
+            ]
+        }
+
+        IMPORTANT JSON OUTPUT REQUIREMENT:
+
+        Every object in the verdicts array MUST include:
+        - verdict
+        - reason
+
+        Include a reason for ALL verdicts.
+
+        Never omit either field.
         """
+
 
 
 def evaluate_faithfulness(
@@ -89,11 +200,15 @@ def evaluate_faithfulness(
         async_mode=False,
         penalize_ambiguous_claims=True,
         verbose_mode=False,
-        evaluation_template=GroqFaithfulnessTemplate,
+        evaluation_template=CustomFaithfulnessTemplate,
     )
 
     try:
         metric.measure(test_case)
+        print("\n[FAITHFULNESS DEBUG]")
+        print("Claims:", getattr(metric, "truths", None))
+        print("Assertions:", getattr(metric, "claims", None))
+        print("Verdicts:", getattr(metric, "verdicts", None))
 
     except Exception as error:
         print(

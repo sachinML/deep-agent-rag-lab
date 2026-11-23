@@ -1,0 +1,67 @@
+## What is pyproject.toml?
+- A standard Python configuration file that defines project metadata, Python version requirements, and direct dependencies.
+- It replaces the dependency-declaration role of requirements.txt.
+- When you run uv add langchain, the dependency is automatically added to pyproject.toml.
+
+
+## What is uv.lock?
+- A lockfile generated and maintained by uv.
+- Stores the exact resolved versions of direct and transitive dependencies.
+- Ensures developers, CI/CD pipelines, and deployment environments install consistent dependency versions.
+- Automatically updated when you run uv add or uv lock
+
+
+##How do they replace requirements.txt?
+
+Previously:
+pip install -r requirements.txt
+
+
+With uv:
+uv sync
+
+- pyproject.toml defines what your project needs.
+- uv.lock defines exactly which versions to install.
+- uv sync installs those dependencies into the project's virtual environment (.venv).
+
+
+uv init -->	Initialize a Python project
+uv add langchain --> Add a dependency and update project files
+uv remove langchain -->	Remove a dependency
+uv lock -->	Resolve dependencies and update uv.lock
+uv sync -->	Synchronize the virtual environment
+uv sync --locked --> Sync while ensuring the lockfile is up to date
+uv add -r requirements.txt -->	Import dependencies from requirements.txt
+
+----------------------------------------------------------------------------------------------
+
+Chunk quality checks help identify poorly sized chunks before indexing and retrieval.
+- Min length: Detects extremely small or incomplete chunks.
+- Max length: Detects oversized chunks containing too much information.
+- Average length: Shows the overall chunk size.
+- Median length: Shows the typical chunk size, less affected by outliers.
+- Chunks under 100/200 characters: Flags potentially low-information chunks for inspection.
+Goal: Ensure chunks contain meaningful context so retrieval is accurate and the LLM receives useful evidence.
+
+----------------------------------------------------------------------------------------------
+## RRF:
+
+Suppose two documents appear in both rankings:
+Document	BM25 rank	Dense rank
+A	           1	        10
+B	           5	         5
+
+With K = 10:
+- A = 1/11 + 1/20 = 0.1409
+- B = 1/15 + 1/15 = 0.1333
+- A wins.
+
+With K = 60:
+- A = 1/61 + 1/70 = 0.03068
+- B = 1/65 + 1/65 = 0.03077
+- B wins.
+
+That's the real purpose of K:
+- Small K: Strongly rewards very high positions, even if the other retriever ranks the document lower.
+- Large K: Favors documents ranked consistently well across retrievers.
+We use K = 60 as a common starting point because we don't want one retriever's Rank 1 result to dominate the fusion excessively.
