@@ -1,6 +1,6 @@
 
-from workflow import classify_failure
-from workflow import build_failure_retry_message
+from src.deep_agent_rag.orchestration.workflow import classify_failure
+from src.deep_agent_rag.orchestration.workflow import build_failure_retry_message
 
 cases = [
     {
@@ -78,7 +78,7 @@ retrieval_state = {
 
 retrieval_message = build_failure_retry_message(retrieval_state)
 
-assert "Delegate to the research agent" in retrieval_message
+assert "The previous attempt had insufficient evidence" in retrieval_message
 assert "Missing definition" in retrieval_message
 
 print("PASS: Retrieval retry requests new evidence")

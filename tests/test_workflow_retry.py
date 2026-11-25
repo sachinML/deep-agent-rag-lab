@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-import workflow
+import src.deep_agent_rag.orchestration.workflow as workflow
 
 
 class FakeCollector(BaseCallbackHandler):
@@ -30,47 +30,93 @@ class FakeAgent:
     def __init__(self, scenario):
         self.scenario = scenario
         self.calls = 0
-        self.retrieval_calls = 0
+        self.agent_retrieval_calls = 0
 
     def invoke(self, inputs, config=None):
         self.calls += 1
+
         prompt = inputs["messages"][0]["content"]
         collector = FakeCollector.latest
 
-        if self.scenario == "retrieval":
-            if self.calls == 1:
-                collector.context = [
-                    "[DOC-001] Unrelated information."
-                ]
-                answer = "Initial answer [DOC-001]"
-            else:
-                assert "Delegate to the research agent" in prompt
-                collector.context = [
-                    "[DOC-002] Non-parametric memory is external."
-                ]
-                answer = "Non-parametric memory is external [DOC-002]"
-
-            self.retrieval_calls += 1
-            collector.events = [{"tool": "rag_search_chunks"}]
-
-        else:
-            if self.calls == 1:
+        if self.calls == 1:
+            if self.scenario == "generation":
                 collector.context = [
                     "[DOC-001] Non-parametric memory is external."
                 ]
                 answer = "Unsupported answer [DOC-001]"
-                self.retrieval_calls += 1
-                collector.events = [{"tool": "rag_search_chunks"}]
             else:
-                assert "Do not invoke the research agent" in prompt
-                collector.context = []
-                answer = "Supported answer [DOC-001]"
+                collector.context = [
+                    "[DOC-001] Unrelated information."
+                ]
+                answer = "Initial answer [DOC-001]"
+
+            collector.events = [
+                {"tool": "rag_search_chunks"}
+            ]
+            self.agent_retrieval_calls += 1
+
+        elif self.scenario == "generation":
+            assert "Do not invoke the research agent" in prompt
+
+            collector.context = []
+            collector.events = []
+
+            answer = "Supported answer [DOC-001]"
+
+        elif self.scenario == "retrieval":
+            assert "LangGraph has already performed" in prompt
+            assert "[DOC-002]" in prompt
+
+            collector.context = []
+            collector.events = []
+
+            answer = (
+                "Non-parametric memory is external [DOC-002]"
+            )
+
+        elif self.scenario == "retrieval_ignored":
+            # The agent does not call any retrieval tool.
+            # LangGraph must already have recovered evidence.
+            assert "LangGraph has already performed" in prompt
+            assert "[DOC-002]" in prompt
+
+            collector.context = []
+            collector.events = []
+
+            answer = (
+                "Non-parametric memory is external [DOC-002]"
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown scenario: {self.scenario}"
+            )
 
         return {
             "messages": [
                 SimpleNamespace(text=answer)
             ]
         }
+
+
+class FakeRetrievalTool:
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, inputs):
+        self.calls += 1
+
+        assert "query" in inputs
+        assert inputs["k"] == 8
+
+        return [
+            {
+                "id": "DOC-002",
+                "chunk_id": "DOC-002",
+                "title": "RAG Memory",
+                "content": "Non-parametric memory is external.",
+            }
+        ]
 
 
 def fake_retrieval(question, retrieval_context):
@@ -86,6 +132,7 @@ def fake_sufficiency(question, retrieval_context):
         "Non-parametric memory is external" in passage
         for passage in retrieval_context
     )
+
     return {
         "sufficient": sufficient,
         "score": float(sufficient),
@@ -95,6 +142,7 @@ def fake_sufficiency(question, retrieval_context):
 
 def fake_faithfulness(question, answer, retrieval_context):
     passed = not answer.startswith("Unsupported")
+
     return {
         "passed": passed,
         "score": float(passed),
@@ -104,14 +152,39 @@ def fake_faithfulness(question, answer, retrieval_context):
 
 def run_scenario(scenario):
     agent = FakeAgent(scenario)
+    retrieval_tool = FakeRetrievalTool()
 
     with (
-        patch.object(workflow, "RequestEvidenceCollector", FakeCollector),
-        patch.object(workflow, "evaluate_retrieval", fake_retrieval),
-        patch.object(workflow, "evaluate_sufficiency", fake_sufficiency),
-        patch.object(workflow, "evaluate_faithfulness", fake_faithfulness),
+        patch.object(
+            workflow,
+            "RequestEvidenceCollector",
+            FakeCollector,
+        ),
+        patch.object(
+            workflow,
+            "rag_search_chunks",
+            retrieval_tool,
+        ),
+        patch.object(
+            workflow,
+            "evaluate_retrieval",
+            fake_retrieval,
+        ),
+        patch.object(
+            workflow,
+            "evaluate_sufficiency",
+            fake_sufficiency,
+        ),
+        patch.object(
+            workflow,
+            "evaluate_faithfulness",
+            fake_faithfulness,
+        ),
     ):
-        graph = workflow.build_workflow(agent, store=None)
+        graph = workflow.build_workflow(
+            agent,
+            store=None,
+        )
 
         result = graph.invoke(
             {
@@ -130,23 +203,53 @@ def run_scenario(scenario):
         )
 
     assert result["attempts"] == 2
+    assert agent.calls == 2
     assert result["failure_type"] == "PASSED"
     assert result["evaluation"]["passed"] is True
+    assert len(result["attempt_history"]) == 2
 
-    if scenario == "retrieval":
-        assert agent.retrieval_calls == 2
+    if scenario in ("retrieval", "retrieval_ignored"):
+        # Initial retrieval happened inside the agent.
+        assert agent.agent_retrieval_calls == 1
+
+        # The recovery node must explicitly call retrieval.
+        assert retrieval_tool.calls == 1
+
+        # The recovered passage must be accumulated.
         assert len(result["retrieval_context"]) == 2
-    else:
-        assert agent.retrieval_calls == 1
+
+        # Verify the recovery node was recorded.
+        recovery_events = [
+            event
+            for event in result["trajectory"]
+            if event.get("source") == "workflow_recovery"
+        ]
+
+        assert len(recovery_events) == 1
+        assert recovery_events[0]["tool"] == "rag_search_chunks"
+
+    elif scenario == "generation":
+        # No additional retrieval during generation correction.
+        assert agent.agent_retrieval_calls == 1
+        assert retrieval_tool.calls == 0
+
         assert len(result["retrieval_context"]) == 1
 
-    print(f"\nPASS: {scenario} scenario")
-    print("Generation attempts:", agent.calls)
-    print("Simulated retrieval calls:", agent.retrieval_calls)
+    print(f"\nPASS: {scenario}")
+    print("Agent calls:", agent.calls)
+    print("Agent retrieval calls:", agent.agent_retrieval_calls)
+    print("Forced retrieval calls:", retrieval_tool.calls)
     print("Final classification:", result["failure_type"])
 
 
 if __name__ == "__main__":
+    print("\n=== TEST 1: RETRIEVAL FAILURE ===")
     run_scenario("retrieval")
+
+    print("\n=== TEST 2: GENERATION FAILURE ===")
     run_scenario("generation")
-    print("\nPASS: Both workflow retry scenarios")
+
+    print("\n=== TEST 3: AGENT IGNORES RETRIEVAL ===")
+    run_scenario("retrieval_ignored")
+
+    print("\nPASS: All deterministic recovery tests")

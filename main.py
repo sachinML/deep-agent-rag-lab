@@ -20,9 +20,9 @@ from langchain.agents.middleware import (
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from knowledge import rag_search_chunks
-from workflow import build_workflow
-from trajectory_evaluation import evaluate_trajectory
+from deep_agent_rag.retrieval.knowledge import rag_search_chunks
+from src.deep_agent_rag.orchestration.workflow import build_workflow
+from deep_agent_rag.evaluation.trajectory import evaluate_trajectory
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 

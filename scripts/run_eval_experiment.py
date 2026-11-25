@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from langfuse import Evaluation, get_client
 from langfuse.langchain import CallbackHandler

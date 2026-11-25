@@ -1,4 +1,4 @@
-from workflow import classify_failure
+from src.deep_agent_rag.orchestration.workflow import classify_failure
 
 test_cases = [
     {

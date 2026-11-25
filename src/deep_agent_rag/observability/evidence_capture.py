@@ -7,7 +7,7 @@ import json
 
 from langchain_core.callbacks import BaseCallbackHandler # LangChain interface that lets your code respond to events during execution.
 
-from evidence import EvidenceCollector
+from deep_agent_rag.observability.evidence import EvidenceCollector
 
 
 class RequestEvidenceCollector(BaseCallbackHandler):

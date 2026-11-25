@@ -3,7 +3,7 @@ import json
 from uuid import uuid4
 from types import SimpleNamespace
 
-from evidence_capture import RequestEvidenceCollector
+from deep_agent_rag.observability.evidence_capture import RequestEvidenceCollector
 
 
 def main():

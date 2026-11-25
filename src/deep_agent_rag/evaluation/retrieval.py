@@ -3,7 +3,7 @@ from deepeval.metrics import ContextualRelevancyMetric
 from deepeval.metrics.contextual_relevancy import ContextualRelevancyTemplate
 from deepeval.test_case import LLMTestCase
 
-from evaluation import judge_model
+from deep_agent_rag.evaluation.faithfulness import judge_model
 from pydantic import BaseModel, Field
 
 

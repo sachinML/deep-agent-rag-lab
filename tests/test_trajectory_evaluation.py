@@ -1,5 +1,5 @@
 
-from trajectory_evaluation import evaluate_trajectory
+from deep_agent_rag.evaluation.trajectory import evaluate_trajectory
 
 
 def test_efficient_agent():
