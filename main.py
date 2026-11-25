@@ -14,6 +14,7 @@ from deepagents.backends import (
 from deepagents.backends.utils import create_file_data
 
 from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
     TodoListMiddleware,
     wrap_tool_call,
 )
@@ -21,8 +22,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deep_agent_rag.retrieval.knowledge import rag_search_chunks
-from src.deep_agent_rag.orchestration.workflow import build_workflow
+from deep_agent_rag.orchestration.workflow import build_workflow
 from deep_agent_rag.evaluation.trajectory import evaluate_trajectory
+from deep_agent_rag.agents.ticket_tools import create_support_ticket
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -30,6 +32,12 @@ from langfuse import get_client, propagate_attributes
 from langfuse.langchain import CallbackHandler
 from langchain_core.rate_limiters import InMemoryRateLimiter
 
+from deep_agent_rag.agents.prompts import (
+    SUPERVISOR_SYSTEM_PROMPT,
+    RESEARCH_AGENT_SYSTEM_PROMPT,
+)
+from langgraph.types import Command
+from deep_agent_rag.orchestration.checkpoint import create_sqlite_checkpointer
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -159,14 +167,15 @@ backend = CompositeBackend(
 # In your current code, the lambda ignores its input and always returns: ("rag-research-agent",). That means all threads using this configuration access the same memory namespace.
 # Later, you could implement a user-specific namespace, assuming an authenticated user identity is available in trusted runtime context.
 
-# --------------------------------------------------
-# 4. Create specialized subagent
-# --------------------------------------------------
 
+# --------------------------------------------------
+# 6. LangGraph checkpointing
+# --------------------------------------------------
+# persistent memory using sqllite
+checkpointer, checkpoint_connection = create_sqlite_checkpointer()
 
 research_subagent = {
     "name": "research-agent",
-
     "description": (
         "Dedicated knowledge-base retrieval specialist for ALL technical "
         "questions about RAG, retrieval, embeddings, reranking, and "
@@ -175,235 +184,10 @@ research_subagent = {
         "access to rag_search_chunks and Elasticsearch retrieval. "
         "Do not use general-purpose for knowledge-base research."
     ),
-
-    "system_prompt": """
-    You are a specialized research agent.
-
-    Your job:
-    1. Search the indexed knowledge base using rag_search_chunks.
-    2. Retrieve relevant chunks from Elasticsearch.
-    3. Gather evidence and compare findings when necessary.
-    4. Return the exact chunk IDs and supporting evidence.
-    5. Provide a concise research summary to the supervisor.
-
-    CITATION RULES:
-    CITATION FORMATTING:
-        - Put each chunk ID in its own square brackets.
-        - Correct:
-        [b38452e1bcc1a239-0003] [b38452e1bcc1a239-0006]
-        - Incorrect:
-        [b38452e1bcc1a239-0003, b38452e1bcc1a239-0006]
-        - Never combine multiple chunk IDs inside one pair of brackets.
-    - Each retrieved chunk has a unique ID.
-    - Cite the exact chunk IDs returned by rag_search_chunks.
-    - Example: [b38452e1bcc1a239-0011]
-    - Never invent or modify chunk IDs.
-    - Multiple chunks may belong to the same source document.
-
-    If the indexed knowledge base does not contain sufficient
-    information, explicitly report the missing evidence.
-    Do not use pretrained knowledge as a substitute for retrieval.
-
-    RETRIEVAL EFFICIENCY:
-    - For straightforward definition questions, retrieve 3 chunks.
-    - For comparisons, retrieve up to 5 chunks.
-    - Use 10 chunks only for complex, multi-part research.
-    - Avoid unnecessary retrieval calls.
-    """,
-
+    "system_prompt": RESEARCH_AGENT_SYSTEM_PROMPT,
     "tools": [rag_search_chunks],
-
     "middleware": [log_tool_calls],
 }
-
-
-
-# --------------------------------------------------
-# 5. Main agent instructions
-# --------------------------------------------------
-
-
-SYSTEM_PROMPT = """
-You are a technical Agentic RAG research assistant
-acting as the main supervisor agent.
-
-You help users understand retrieval, RAG architecture,
-embedding models, reranking, and LLM evaluation.
-
-SUBAGENT ROUTING POLICY:
-
-For all technical knowledge-base questions, use the task tool
-with the exact argument:
-
-subagent_type="research-agent"
-
-This includes simple definitions, explanations, comparisons,
-and complex research questions.
-
-Do not select subagent_type="general-purpose" for
-knowledge-base retrieval.
-
-Only research-agent has access to rag_search_chunks.
-
-Exception:
-During a CORRECTION REQUEST, reuse previously retrieved
-evidence when it is sufficient. Delegate again only when
-additional retrieval is necessary.
-
-CORRECTION POLICY:
-
-When receiving a CORRECTION REQUEST:
-
-1. Review the previous answer and evaluation feedback.
-2. Inspect any previously retrieved evidence supplied.
-3. If that evidence is sufficient, revise the answer
-   without delegating new research.
-4. If evidence is missing or insufficient, delegate
-   to research-agent to obtain additional documents.
-5. Cite only documents supporting the final answer.
-
-This policy takes precedence over mandatory initial
-research delegation when evidence is already supplied.
-
-BEHAVIOR:
-
-IMPORTANT RETRY POLICY:
-
-If the user message explicitly identifies itself as a
-CORRECTION attempt and includes previously retrieved
-document evidence:
-
-- First attempt to correct the answer using that evidence.
-- Do not repeat research simply because the question is technical.
-- Delegate to research-agent again only when the existing
-  evidence is genuinely insufficient or additional facts
-  are required.
-- Never invent missing information.
-
-This correction policy takes precedence over the
-mandatory initial-retrieval instructions below.
-
-1. Simple questions:
-   For greetings, conversational questions, or requests
-   unrelated to the technical knowledge base, you may
-   answer directly.
-
-   For any question involving retrieval, RAG architecture,
-   embedding models, reranking, or LLM evaluation,
-   research-agent delegation is mandatory, even if the
-   answer seems obvious or familiar.
-
-2. Technical knowledge-base questions:
-   You do not have direct access to rag_search_chunks.
-
-   Before generating an answer about the technical
-   knowledge base, you MUST delegate research to
-   research-agent using the task tool.
-
-   Ask research-agent to retrieve relevant Elasticsearch
-   chunks and return their exact IDs and supporting evidence.
-
-   Do not answer these questions using only pretrained
-   model knowledge.
-
-   CITATION POLICY:
-   CITATION FORMATTING:
-    - Put each chunk ID in its own square brackets.
-    - Correct:
-    [b38452e1bcc1a239-0003] [b38452e1bcc1a239-0006]
-    - Incorrect:
-    [b38452e1bcc1a239-0003, b38452e1bcc1a239-0006]
-    - Never combine multiple chunk IDs inside one pair of brackets.
-   - Cite the exact chunk ID provided by research-agent.
-   - Example: [b38452e1bcc1a239-0011]
-   - Never invent, shorten, or modify chunk IDs.
-   - Only cite evidence actually retrieved.
-   - Ensure each factual claim is supported by its citation.
-
-   If research-agent returns insufficient evidence,
-   acknowledge the limitation rather than inventing facts.
-
-
-RESEARCH EFFICIENCY POLICY:
-
-- Match research depth to the user's requested scope.
-- For simple definition questions, request only the essential
-  definition and directly relevant supporting evidence.
-- Do not expand a simple question into research on formulas,
-  parameters, comparisons, or applications unless requested.
-- For complex comparison questions, broader research is allowed.
-- Avoid repeated retrieval when the available evidence already
-  answers the delegated research task.
-- Delegate only the necessary work to the research agent.
-
-
-3. Complex research questions:
-   Delegate document research and comparisons to
-   research-agent.
-
-   Provide the subagent with a clear research objective
-   and request document IDs as supporting evidence.
-
-   After receiving its findings, synthesize a final answer.
-
-4. Planning:
-   For genuinely multi-step tasks, create and update
-   a todo list using write_todos.
-
-   Do not create a plan unnecessarily for simple tasks.
-
-5. Filesystem:
-   Save temporary research findings under /workspace/.
-   Save reusable memory under /memories/.
-
-6. Memory:
-   Update /memories/AGENTS.md only when the user
-   explicitly asks to remember something reusable.
-   Preserve existing instructions.
-
-7. Grounding:
-   Every technical answer must be grounded in retrieved
-   knowledge-base chunks.
-
-   Cite exact chunk IDs supplied by research-agent.
-   Use the format [chunk_id].
-
-   Do not invent citations or unsupported information.
-   Do not cite source documents when a chunk ID is required.
-
-   If the retrieved evidence is insufficient, explain
-   what information is missing.
-
-8. Reports:
-   For complex research, you may save a report
-   using the filesystem write_file tool.
-
-9. Delegation:
-   You are responsible for coordinating work,
-   not performing knowledge-base retrieval yourself.
-
-   Always call research-agent for questions involving
-   RAG, retrieval, embeddings, reranking, or LLM evaluation.
-
-   Direct answers are permitted only for greetings,
-   conversational interactions, or unrelated questions
-   that do not require knowledge-base research.
-
-    If evaluation feedback reports missing evidence,
-    delegate to research-agent for additional retrieval.
-
-    If evidence is sufficient but the answer has missing
-    or incorrect citations, correct the answer using
-    existing evidence without unnecessary retrieval.
-"""
-
-
-
-# --------------------------------------------------
-# 6. LangGraph checkpointing
-# --------------------------------------------------
-
-checkpointer = MemorySaver()
 
 
 # --------------------------------------------------
@@ -413,14 +197,22 @@ checkpointer = MemorySaver()
 agent = create_deep_agent(
     model=MODEL,
 
-    system_prompt=SYSTEM_PROMPT,
+    system_prompt=SUPERVISOR_SYSTEM_PROMPT,
 
-    tools=[], #[rag_search_chunks],
+    tools=[create_support_ticket],
 
     subagents=[research_subagent],
 
     middleware=[
         TodoListMiddleware(),
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                "create_support_ticket": {
+                    "allowed_decisions": ["approve", "reject"],
+                }
+            },
+            description_prefix="Human approval required",
+        ),
         log_tool_calls,
     ],
 
@@ -436,6 +228,86 @@ agent = create_deep_agent(
 workflow = build_workflow(agent, store)
 
 
+# HITL
+def handle_ticket_request(question: str, thread_number: int):
+    """Run the HITL-enabled supervisor for a support-ticket request."""
+
+    config = {
+        "configurable": {
+            "thread_id": f"ticket-{thread_number}-{uuid4().hex}",
+        },
+        "recursion_limit": 60,
+        "callbacks": [langfuse_handler],
+    }
+
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            ]
+        },
+        config=config,
+    )
+
+    while result.get("__interrupt__"):
+        for item in result["__interrupt__"]:
+            print("\n=== HUMAN APPROVAL REQUIRED ===")
+
+            for action in item.value.get("action_requests", []):
+                print(f"Tool: {action['name']}")
+                print(f"Arguments: {action['args']}")
+
+        decision = input(
+            "\nApprove ticket creation? (yes/no): "
+        ).strip().lower()
+
+        while decision not in ("yes", "no"):
+            decision = input(
+                "Please enter yes or no: "
+            ).strip().lower()
+
+        result = agent.invoke(
+            Command(
+                resume={
+                    "decisions": [
+                        {
+                            "type": (
+                                "approve"
+                                if decision == "yes"
+                                else "reject"
+                            )
+                        }
+                    ]
+                }
+            ),
+            config=config,
+        )
+
+    print("\nAgent:")
+
+    for message in reversed(result.get("messages", [])):
+        if message.type != "ai":
+            continue
+
+        content = message.content
+
+        if isinstance(content, str):
+            print(content)
+
+        elif isinstance(content, list):
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                ):
+                    print(block.get("text", ""))
+
+        break
+
+
 # --------------------------------------------------
 # 8. CLI execution
 # --------------------------------------------------
@@ -449,6 +321,7 @@ def main():
     print("\nDeep Agent RAG Lab")
     print("Type 'exit' to quit.")
     print("Type '/new' to start a new conversation.\n")
+    print("Type '/ticket <description>' to create a support ticket.\n")
 
     thread_number = 1
 
@@ -464,6 +337,31 @@ def main():
             continue
 
         if not question:
+            continue
+
+        if question.lower().startswith("/ticket "):
+            ticket_description = question[8:].strip()
+
+            if not ticket_description:
+                print("Please provide a ticket description.")
+                continue
+
+            try:
+                handle_ticket_request(
+                    question=(
+                        "Create a support ticket for the following issue: "
+                        + ticket_description
+                    ),
+                    thread_number=thread_number,
+                )
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+            continue
+
+        if question.lower() == "/ticket":
+            print("Usage: /ticket <description>")
             continue
 
         config = {
