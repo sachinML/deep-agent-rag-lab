@@ -32,26 +32,25 @@ class WorkflowState(TypedDict):
 
 
 
+
 def classify_failure(state: WorkflowState) -> str:
-    """Classify retrieval and generation failures."""
+    """Classify failures based on evidence sufficiency and answer quality."""
 
     retrieval_eval = state.get("retrieval_evaluation", {})
     answer_eval = state.get("evaluation", {})
 
-    relevant = retrieval_eval.get("relevant", False)
     sufficient = retrieval_eval.get("sufficient", False)
     answer_passed = answer_eval.get("passed", False)
 
-    # Missing, irrelevant or insufficient evidence:
-    # the retrieval process needs improvement.
-    if not relevant or not sufficient:
+    # Insufficient evidence means another retrieval may be necessary.
+    if not sufficient:
         return "RETRIEVAL_FAILURE"
 
-    # Evidence is adequate, but the answer failed
-    # faithfulness or structural checks.
+    # Sufficient evidence, but answer failed validation.
     if not answer_passed:
         return "GENERATION_FAILURE"
 
+    # Enough evidence and a validated answer.
     return "PASSED"
 
 
@@ -287,19 +286,34 @@ def build_workflow(deep_agent, store):
         answer = state["answer"]
         retrieval_context = state["retrieval_context"]
 
+        # Support synthetic DOC IDs and Elasticsearch chunk IDs.
+        citation_pattern = r"(?:DOC-\d{3}|[a-f0-9]{16}-\d{4})"
 
-        # Support the original synthetic DOC IDs and the new
-        # Elasticsearch chunk IDs during migration.
-        citation_pattern = (
-            r"(?:DOC-\d{3}|[a-f0-9]{16}-\d{4})"
+        # Extract individual IDs, including grouped citations:
+        # [ID1, ID2] -> [ID1, ID2]
+        citation_groups = re.findall(
+            r"\[([^\[\]]+)\]",
+            answer,
         )
 
-        citations = sorted(set(
-            re.findall(
-                rf"\[({citation_pattern})\]",
-                answer,
-            )
-        ))
+        citations = set()
+        malformed_citations = []
+
+        for group in citation_groups:
+            # Only process brackets that appear to contain
+            # our document/chunk citation format.
+            if not re.search(r"DOC-|[a-f0-9]{16}-", group):
+                continue
+
+            for item in group.split(","):
+                item = item.strip()
+
+                if re.fullmatch(citation_pattern, item):
+                    citations.add(item)
+                else:
+                    malformed_citations.append(item)
+
+        citations = sorted(citations)
 
         retrieved_ids = {
             match
@@ -317,7 +331,7 @@ def build_workflow(deep_agent, store):
         checks = {
             "non_empty": bool(answer.strip()),
             "has_citations": bool(citations),
-            "valid_citations": not unknown_citations,
+            "valid_citations": (not unknown_citations and not malformed_citations),
             "has_evidence": bool(retrieval_context),
         }
 
@@ -335,7 +349,8 @@ def build_workflow(deep_agent, store):
                 "citations": citations,
                 "feedback": (
                     f"Structural validation failed: {failed_checks}. "
-                    f"Unknown citations: {unknown_citations}"
+                    f"Unknown citations: {unknown_citations}. "
+                    f"Malformed citations: {malformed_citations}"
                 ),
             }
 
