@@ -9,7 +9,7 @@ from collections import defaultdict
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer
 
-from retrieval.compare import (
+from src.deep_agent_rag.retrieval.compare import (
     ES_URL,
     INDEX_NAME,
     MODEL_NAME,

@@ -12,18 +12,18 @@ from statistics import mean
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer
 
-from retrieval.compare import (
+from src.deep_agent_rag.retrieval.compare import (
     ES_URL,
     INDEX_NAME,
     MODEL_NAME,
     bm25_search,
     dense_search,
 )
-from retrieval.hybrid import hybrid_search
+from src.deep_agent_rag.retrieval.hybrid import hybrid_search
 
 from sentence_transformers import CrossEncoder
 
-from retrieval.reranker import (
+from src.deep_agent_rag.retrieval.reranker import (
     RERANKER_MODEL,
     hybrid_rerank_search,
 )

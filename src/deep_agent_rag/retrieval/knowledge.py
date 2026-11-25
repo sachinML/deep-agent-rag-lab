@@ -10,8 +10,8 @@ from elasticsearch import Elasticsearch
 from langchain.tools import tool
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-from retrieval.compare import ES_URL, MODEL_NAME, INDEX_NAME
-from retrieval.reranker import (
+from src.deep_agent_rag.retrieval.compare import ES_URL, MODEL_NAME, INDEX_NAME
+from src.deep_agent_rag.retrieval.reranker import (
     RERANKER_MODEL,
     hybrid_rerank_search,
 )

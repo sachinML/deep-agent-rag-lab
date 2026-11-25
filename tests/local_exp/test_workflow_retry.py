@@ -2,20 +2,15 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import workflow
+import src.deep_agent_rag.orchestration.workflow as workflow
 
 
 QUESTION = "Compare BM25 and dense retrieval."
 
-BM25_CONTEXT = (
-    "[DOC-002] BM25 uses lexical matching, "
-    "term frequency, and inverse document frequency."
-)
-
-DENSE_CONTEXT = (
-    "[DOC-003] Dense retrieval uses embeddings "
-    "and vector similarity for semantic search."
-)
+CONTEXT = [
+    "[DOC-002] BM25 ranks documents using lexical matching.",
+    "[DOC-003] Dense retrieval uses embeddings for semantic search.",
+]
 
 
 class FakeEvidenceCollector:
@@ -44,20 +39,18 @@ class FakeDeepAgent:
         self.calls.append(prompt)
 
         if len(self.calls) == 1:
-            # First attempt: retrieval returns only BM25.
-            self.collector.context = [BM25_CONTEXT]
-            self.collector.documents = ["DOC-002"]
+            # Simulate initial retrieval.
+            self.collector.context = list(CONTEXT)
+            self.collector.documents = ["DOC-002", "DOC-003"]
 
             answer = (
-                "BM25 uses lexical matching [DOC-002]. "
-                "Dense retrieval information is unavailable."
+                "BM25 uses embeddings [DOC-002]. "
+                "Dense retrieval uses vectors [DOC-003]."
             )
 
         else:
-            # Second attempt: research finds missing dense evidence.
-            self.collector.context = [DENSE_CONTEXT]
-            self.collector.documents = ["DOC-003"]
-
+            # Simulate generation-only retry:
+            # No new documents are retrieved.
             answer = (
                 "BM25 uses lexical matching [DOC-002]. "
                 "Dense retrieval uses embeddings [DOC-003]."
@@ -72,51 +65,42 @@ def main():
     collector = FakeEvidenceCollector()
     agent = FakeDeepAgent(collector)
 
-    counts = {
+    call_counts = {
         "relevancy": 0,
         "sufficiency": 0,
         "faithfulness": 0,
     }
 
     def fake_relevancy(question, retrieval_context):
-        counts["relevancy"] += 1
+        call_counts["relevancy"] += 1
         return {
             "relevant": True,
             "score": 1.0,
-            "feedback": "Evidence is related to the question.",
+            "feedback": "Relevant evidence.",
         }
 
     def fake_sufficiency(question, retrieval_context):
-        counts["sufficiency"] += 1
-
-        has_bm25 = BM25_CONTEXT in retrieval_context
-        has_dense = DENSE_CONTEXT in retrieval_context
-
-        sufficient = has_bm25 and has_dense
-
+        call_counts["sufficiency"] += 1
         return {
-            "sufficient": sufficient,
-            "score": 1.0 if sufficient else 0.0,
-            "feedback": (
-                "Both retrieval methods are covered."
-                if sufficient
-                else "Missing information about dense retrieval."
-            ),
+            "sufficient": True,
+            "score": 1.0,
+            "feedback": "Evidence is sufficient.",
         }
 
     def fake_faithfulness(question, answer, retrieval_context):
-        counts["faithfulness"] += 1
+        call_counts["faithfulness"] += 1
 
-        has_dense = DENSE_CONTEXT in retrieval_context
+        if call_counts["faithfulness"] == 1:
+            return {
+                "passed": False,
+                "score": 0.5,
+                "feedback": "BM25 does not use embeddings.",
+            }
 
         return {
-            "passed": has_dense,
-            "score": 1.0 if has_dense else 0.5,
-            "feedback": (
-                "Answer is grounded."
-                if has_dense
-                else "The comparison is incomplete."
-            ),
+            "passed": True,
+            "score": 1.0,
+            "feedback": "The corrected answer is grounded.",
         }
 
     with (
@@ -131,7 +115,7 @@ def main():
             {
                 "question": QUESTION,
                 "answer": "",
-                "thread_id": "retrieval-failure-test",
+                "thread_id": "retry-test",
                 "evaluation": {},
                 "attempts": 0,
                 "retrieval_context": [],
@@ -142,27 +126,19 @@ def main():
     print("Attempts:", result["attempts"])
     print("Failure type:", result["failure_type"])
     print("Agent invocations:", len(agent.calls))
-    print("Relevancy evaluations:", counts["relevancy"])
-    print("Sufficiency evaluations:", counts["sufficiency"])
-    print("Faithfulness evaluations:", counts["faithfulness"])
-    print("Final context:", result["retrieval_context"])
+    print("Relevancy evaluations:", call_counts["relevancy"])
+    print("Sufficiency evaluations:", call_counts["sufficiency"])
+    print("Faithfulness evaluations:", call_counts["faithfulness"])
 
     assert result["attempts"] == 2
     assert result["failure_type"] == "PASSED"
-
     assert len(agent.calls) == 2
+    assert call_counts["relevancy"] == 1
+    assert call_counts["sufficiency"] == 1
+    assert call_counts["faithfulness"] == 2
+    assert result["retrieval_context"] == CONTEXT
 
-    assert counts["relevancy"] == 2
-    assert counts["sufficiency"] == 2
-    assert counts["faithfulness"] == 2
-
-    assert result["retrieval_context"] == [
-        BM25_CONTEXT,
-        DENSE_CONTEXT,
-    ]
-
-    assert "Missing information about dense retrieval" in agent.calls[1]
-    assert "Delegate to the research agent" in agent.calls[1]
+    assert "Reuse the following evidence" in agent.calls[1]
 
     print("\nALL TESTS PASSED")
 

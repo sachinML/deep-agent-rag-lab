@@ -11,15 +11,15 @@ from pathlib import Path
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-from retrieval.compare import (
+from src.deep_agent_rag.retrieval.compare import (
     ES_URL,
     INDEX_NAME,
     MODEL_NAME,
     bm25_search,
     dense_search,
 )
-from retrieval.hybrid import hybrid_search
-from retrieval.reranker import (
+from src.deep_agent_rag.retrieval.hybrid import hybrid_search
+from src.deep_agent_rag.retrieval.reranker import (
     RERANKER_MODEL,
     hybrid_rerank_search,
 )

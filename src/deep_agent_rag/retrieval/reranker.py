@@ -6,8 +6,8 @@ os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-from retrieval.compare import ES_URL, MODEL_NAME, QUESTIONS
-from retrieval.hybrid import hybrid_search
+from src.deep_agent_rag.retrieval.compare import ES_URL, MODEL_NAME, QUESTIONS
+from src.deep_agent_rag.retrieval.hybrid import hybrid_search
 
 
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"

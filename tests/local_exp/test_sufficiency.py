@@ -1,5 +1,5 @@
 
-from retrieval_evaluation import evaluate_sufficiency
+from deep_agent_rag.evaluation.retrieval import evaluate_sufficiency
 
 question = "Compare BM25 and dense retrieval."
 

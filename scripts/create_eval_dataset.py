@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langfuse import get_client
 
 # Load Langfuse credentials from .env
-load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 langfuse = get_client()
 

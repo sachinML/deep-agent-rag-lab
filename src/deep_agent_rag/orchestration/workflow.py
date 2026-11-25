@@ -1,10 +1,12 @@
 import re
+import json
+from deep_agent_rag.retrieval.knowledge import rag_search_chunks
 from typing import TypedDict, NotRequired
 
 from langgraph.graph import StateGraph, START, END
-from evidence_capture import RequestEvidenceCollector
-from evaluation import evaluate_faithfulness
-from retrieval_evaluation import (
+from deep_agent_rag.observability.evidence_capture import RequestEvidenceCollector
+from deep_agent_rag.evaluation.faithfulness import evaluate_faithfulness
+from deep_agent_rag.evaluation.retrieval import (
     evaluate_retrieval,
     evaluate_sufficiency,
 )
@@ -29,29 +31,29 @@ class WorkflowState(TypedDict):
 
     # "retrieval", "generation", or None
     failure_type: NotRequired[str | None]
+    recovery_changed: NotRequired[bool]
+
 
 
 
 def classify_failure(state: WorkflowState) -> str:
-    """Classify retrieval and generation failures."""
+    """Classify failures based on evidence sufficiency and answer quality."""
 
     retrieval_eval = state.get("retrieval_evaluation", {})
     answer_eval = state.get("evaluation", {})
 
-    relevant = retrieval_eval.get("relevant", False)
     sufficient = retrieval_eval.get("sufficient", False)
     answer_passed = answer_eval.get("passed", False)
 
-    # Missing, irrelevant or insufficient evidence:
-    # the retrieval process needs improvement.
-    if not relevant or not sufficient:
+    # Insufficient evidence means another retrieval may be necessary.
+    if not sufficient:
         return "RETRIEVAL_FAILURE"
 
-    # Evidence is adequate, but the answer failed
-    # faithfulness or structural checks.
+    # Sufficient evidence, but answer failed validation.
     if not answer_passed:
         return "GENERATION_FAILURE"
 
+    # Enough evidence and a validated answer.
     return "PASSED"
 
 
@@ -93,32 +95,127 @@ def build_failure_retry_message(state: WorkflowState) -> str:
             Remove unsupported claims.
             """
 
+
     if failure_type == "RETRIEVAL_FAILURE":
-                    return f"""
-            The previous attempt did not retrieve sufficient evidence.
+        context_text = "\n\n".join(retrieval_context)
 
-            Original question:
-            {question}
+        return f"""
+        The previous attempt had insufficient evidence.
 
-            Missing evidence feedback:
-            {retrieval_evaluation.get("sufficiency_feedback", "")}
+        Original question:
+        {question}
 
-            Previously retrieved document IDs:
-            {retrieval_context}
+        Missing evidence feedback:
+        {retrieval_evaluation.get("sufficiency_feedback", "")}
 
-            Delegate to the research agent to find the missing information.
+        LangGraph has already performed an additional
+        retrieval operation.
 
-            Focus on the gaps identified by the sufficiency evaluator.
+        Use the complete accumulated evidence below.
+        Do not invoke the research agent again.
 
-            Do not invent missing facts.
-            If the knowledge base cannot provide the required information,
-            explain that limitation.
-            """
+        RETRIEVED EVIDENCE:
+        {context_text}
+
+        Generate a corrected answer using only this evidence.
+        Cite the exact chunk IDs.
+
+        If the evidence is still insufficient, explicitly
+        acknowledge the missing information.
+        """
+
 
     return question
 
 
 def build_workflow(deep_agent, store):
+
+    def recover_retrieval(state: WorkflowState):
+        """Force retrieval after an evidence-sufficiency failure."""
+
+        print("\n[LANGGRAPH] Deterministic retrieval recovery")
+
+        question = state["question"]
+        feedback = state.get(
+            "retrieval_evaluation", {}
+        ).get("sufficiency_feedback", "")
+
+        query = question
+
+        if feedback:
+            query += f"\nMissing information: {feedback[:250]}"
+
+        # Explicit retrieval: no LLM tool-selection decision.
+        raw_result = rag_search_chunks.invoke(
+            {"query": query, "k": 8}
+        )
+
+        documents = (
+            json.loads(raw_result)
+            if isinstance(raw_result, str)
+            else raw_result
+        )
+
+        if not isinstance(documents, list):
+            raise ValueError(
+                "Retrieval recovery expected a list of documents"
+            )
+
+        existing_context = list(
+            state.get("retrieval_context", [])
+        )
+
+        existing_ids = {
+            passage.split("]", 1)[0].removeprefix("[")
+            for passage in existing_context
+            if passage.startswith("[") and "]" in passage
+        }
+
+        new_count = 0
+
+        for document in documents:
+            chunk_id = document.get(
+                "chunk_id", document.get("id")
+            )
+
+            if not chunk_id:
+                continue
+
+            if chunk_id in existing_ids:
+                continue
+
+            title = document.get("title", "")
+            content = document.get("content", "")
+
+            passage = f"[{chunk_id}] {title}\n{content}"
+
+            existing_context.append(passage)
+            existing_ids.add(chunk_id)
+            new_count += 1
+
+        attempt = state["attempts"] + 1
+
+        trajectory = [
+            *state.get("trajectory", []),
+            {
+                "tool": "rag_search_chunks",
+                "status": "completed",
+                "attempt": attempt,
+                "source": "workflow_recovery",
+            },
+        ]
+
+        print(
+            f"[RECOVERY] {new_count} new chunks; "
+            f"{len(existing_context)} total passages"
+        )
+
+        return {
+            "retrieval_context": existing_context,
+            "recovery_changed": new_count > 0,
+            "trajectory": trajectory,
+        }
+
 
     def generate_answer(
         state: WorkflowState,
@@ -149,7 +246,7 @@ def build_workflow(deep_agent, store):
                 print("[RETRY] Reuse existing evidence")
 
             elif failure_type == "RETRIEVAL_FAILURE":
-                print("[RETRY] Search for missing evidence")
+                print("[RETRY] Regenerate using recovered evidence")
 
         attempt_thread_id = (
             f"{state['thread_id']}-attempt-{attempt}"
@@ -228,7 +325,11 @@ def build_workflow(deep_agent, store):
             "answer": result["messages"][-1].text,
             "attempts": attempt,
             "retrieval_context": retrieval_context,
-            "retrieval_changed": retrieval_context != previous_context,
+            "retrieval_changed": (
+                retrieval_context != previous_context
+                or state.get("recovery_changed", False)
+            ),
+            "recovery_changed": False,
             "trajectory": trajectory,
         }
 
@@ -287,19 +388,34 @@ def build_workflow(deep_agent, store):
         answer = state["answer"]
         retrieval_context = state["retrieval_context"]
 
+        # Support synthetic DOC IDs and Elasticsearch chunk IDs.
+        citation_pattern = r"(?:DOC-\d{3}|[a-f0-9]{16}-\d{4})"
 
-        # Support the original synthetic DOC IDs and the new
-        # Elasticsearch chunk IDs during migration.
-        citation_pattern = (
-            r"(?:DOC-\d{3}|[a-f0-9]{16}-\d{4})"
+        # Extract individual IDs, including grouped citations:
+        # [ID1, ID2] -> [ID1, ID2]
+        citation_groups = re.findall(
+            r"\[([^\[\]]+)\]",
+            answer,
         )
 
-        citations = sorted(set(
-            re.findall(
-                rf"\[({citation_pattern})\]",
-                answer,
-            )
-        ))
+        citations = set()
+        malformed_citations = []
+
+        for group in citation_groups:
+            # Only process brackets that appear to contain
+            # our document/chunk citation format.
+            if not re.search(r"DOC-|[a-f0-9]{16}-", group):
+                continue
+
+            for item in group.split(","):
+                item = item.strip()
+
+                if re.fullmatch(citation_pattern, item):
+                    citations.add(item)
+                else:
+                    malformed_citations.append(item)
+
+        citations = sorted(citations)
 
         retrieved_ids = {
             match
@@ -317,7 +433,7 @@ def build_workflow(deep_agent, store):
         checks = {
             "non_empty": bool(answer.strip()),
             "has_citations": bool(citations),
-            "valid_citations": not unknown_citations,
+            "valid_citations": (not unknown_citations and not malformed_citations),
             "has_evidence": bool(retrieval_context),
         }
 
@@ -335,7 +451,8 @@ def build_workflow(deep_agent, store):
                 "citations": citations,
                 "feedback": (
                     f"Structural validation failed: {failed_checks}. "
-                    f"Unknown citations: {unknown_citations}"
+                    f"Unknown citations: {unknown_citations}. "
+                    f"Malformed citations: {malformed_citations}"
                 ),
             }
 
@@ -411,6 +528,7 @@ def build_workflow(deep_agent, store):
             print(f"Citations: {record['citations']}")
             print(f"Feedback: {record['feedback']}")
 
+
     def route_after_evaluation(state: WorkflowState) -> str:
         failure_type = state.get("failure_type")
         attempts = state.get("attempts", 0)
@@ -428,17 +546,25 @@ def build_workflow(deep_agent, store):
             print_attempt_history(state)
             return "end"
 
-        print(
-            f"[ROUTER] {failure_type} → "
-            f"Retry attempt {attempts + 1}"
-        )
+        if failure_type == "RETRIEVAL_FAILURE":
+            print(
+                "[ROUTER] Retrieval failure → "
+                "deterministic retrieval recovery"
+            )
+            return "recover"
 
+        print(
+            "[ROUTER] Generation failure → "
+            f"retry attempt {attempts + 1}"
+        )
         return "retry"
+
 
     # Build the LangGraph workflow.
     builder = StateGraph(WorkflowState)
 
     builder.add_node("generate", generate_answer)
+    builder.add_node("recover_retrieval", recover_retrieval)
 
     builder.add_node(
         "evaluate_retrieval",
@@ -459,11 +585,14 @@ def build_workflow(deep_agent, store):
         "evaluate",
     )
 
+    builder.add_edge("recover_retrieval", "generate")
+
     builder.add_conditional_edges(
         "evaluate",
         route_after_evaluation,
         {
             "retry": "generate",
+            "recover": "recover_retrieval",
             "end": END,
         },
     )
