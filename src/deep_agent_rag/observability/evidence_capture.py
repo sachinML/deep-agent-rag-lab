@@ -39,16 +39,16 @@ class RequestEvidenceCollector(BaseCallbackHandler):
 
             # Record the action, without storing the full
             # prompt or potentially sensitive tool output.
-            if tool_name in {
-                "task",
-                "rag_search_chunks",
-                "write_todos",
-            }:
-                self._trajectory.append({
-                    "run_id": str(run_id),
-                    "tool": tool_name,
-                    "status": "started",
-                })
+            self._trajectory.append({
+                "run_id": str(run_id),
+                "parent_run_id": (
+                    str(kwargs["parent_run_id"])
+                    if kwargs.get("parent_run_id")
+                    else None
+                ),
+                "tool": tool_name,
+                "status": "started",
+            })
 
     def on_tool_end(
         self,
@@ -116,4 +116,29 @@ class RequestEvidenceCollector(BaseCallbackHandler):
 
     def get_trajectory(self) -> list[dict]:
         with self._lock:
-            return [dict(event) for event in self._trajectory]
+            events = [dict(event) for event in self._trajectory]
+
+        # Identify recorded tool runs.
+        recorded_runs = {
+            event["run_id"]: event
+            for event in events
+        }
+
+        filtered_events = []
+
+        for event in events:
+            parent_run_id = event.get("parent_run_id")
+
+            # Skip an inner tool event when its parent
+            # is already recorded as the same tool.
+            parent_event = recorded_runs.get(parent_run_id)
+
+            if (
+                parent_event is not None
+                and parent_event["tool"] == event["tool"]
+            ):
+                continue
+
+            filtered_events.append(event)
+
+        return filtered_events

@@ -1,6 +1,10 @@
 
 import os
 from pathlib import Path
+import asyncio
+import sys
+
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from dotenv import load_dotenv
 from uuid import uuid4
@@ -21,7 +25,6 @@ from langchain.agents.middleware import (
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from deep_agent_rag.retrieval.knowledge import rag_search_chunks
 from deep_agent_rag.orchestration.workflow import build_workflow
 from deep_agent_rag.evaluation.trajectory import evaluate_trajectory
 from deep_agent_rag.agents.ticket_tools import create_support_ticket
@@ -38,6 +41,7 @@ from deep_agent_rag.agents.prompts import (
 )
 from langgraph.types import Command
 from deep_agent_rag.orchestration.checkpoint import create_sqlite_checkpointer
+from langchain_core.tools import StructuredTool
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -174,6 +178,61 @@ backend = CompositeBackend(
 # persistent memory using sqllite
 checkpointer, checkpoint_connection = create_sqlite_checkpointer()
 
+async def load_mcp_tools():
+    client = MultiServerMCPClient(
+        {
+            "rag_tools": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": [
+                    "-m",
+                    "deep_agent_rag.mcp_server.server",
+                ],
+            }
+        }
+    )
+
+    return await client.get_tools()
+
+def make_sync_mcp_tool(async_tool):
+    """Adapt an async MCP tool for the synchronous agent."""
+
+    def sync_invoke(**kwargs):
+        return asyncio.run(async_tool.ainvoke(kwargs))
+
+    return StructuredTool.from_function(
+        func=sync_invoke,
+        name=async_tool.name,
+        description=async_tool.description,
+        args_schema=async_tool.args_schema,
+    )
+
+
+async_mcp_tools = asyncio.run(load_mcp_tools())
+
+mcp_tools = {
+    tool.name: make_sync_mcp_tool(tool)
+    for tool in async_mcp_tools
+}
+
+required_tools = {
+    "get_system_status",
+    "rag_search_chunks",
+}
+
+missing_tools = required_tools - set(mcp_tools)
+
+if missing_tools:
+    raise RuntimeError(
+        f"Missing MCP tools: {sorted(missing_tools)}"
+    )
+
+mcp_status_tool = mcp_tools["get_system_status"]
+mcp_rag_tool = mcp_tools["rag_search_chunks"]
+
+print("MCP tools loaded:", list(mcp_tools))
+
+
 research_subagent = {
     "name": "research-agent",
     "description": (
@@ -185,10 +244,9 @@ research_subagent = {
         "Do not use general-purpose for knowledge-base research."
     ),
     "system_prompt": RESEARCH_AGENT_SYSTEM_PROMPT,
-    "tools": [rag_search_chunks],
+    "tools": [mcp_rag_tool],
     "middleware": [log_tool_calls],
 }
-
 
 # --------------------------------------------------
 # 7. Create Deep Agent
@@ -199,7 +257,10 @@ agent = create_deep_agent(
 
     system_prompt=SUPERVISOR_SYSTEM_PROMPT,
 
-    tools=[create_support_ticket],
+    tools=[
+    create_support_ticket,
+    mcp_status_tool,
+    ],
 
     subagents=[research_subagent],
 
@@ -446,10 +507,10 @@ def main():
 
             # 2. Evaluate tool usage and efficiency
             trajectory_result = evaluate_trajectory(
-                trajectory=result.get("trajectory", []),
-                required_tools=["task", "rag_search_chunks"],
-                max_retrieval_calls=2,
-            )
+                                trajectory=result.get("trajectory", []),
+                                response_type=result.get("response_type", "rag"),
+                                max_retrieval_calls=2,
+                            )
 
             print("\n=== TRAJECTORY EVALUATION ===")
             print(trajectory_result)
