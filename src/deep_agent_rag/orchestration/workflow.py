@@ -19,6 +19,8 @@ class WorkflowState(TypedDict):
     question: str
     answer: str
     thread_id: str
+    response_type: NotRequired[str]
+    tool_result: NotRequired[dict]
     evaluation: dict
     attempts: int
     retrieval_context: list[str]
@@ -289,6 +291,50 @@ def build_workflow(deep_agent, store):
             },
         )
 
+        # This checks the actual tool response rather than trusting the model's claim that it called the tool.
+        status_tool_results = [
+            message
+            for message in result["messages"]
+            if getattr(message, "type", None) == "tool"
+            and getattr(message, "name", None) == "get_system_status"
+        ]
+
+        response_type = "rag"
+        tool_result = {}
+
+        if status_tool_results:
+            latest_result = status_tool_results[-1]
+
+            try:
+                content = latest_result.content
+
+                if isinstance(content, list):
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict)
+                        and block.get("type") == "text"
+                    ]
+                    content = "\n".join(text_parts)
+
+                if not isinstance(content, str):
+                    raise ValueError("Unexpected MCP response format")
+
+                parsed_result = json.loads(content)
+
+                if (
+                    isinstance(parsed_result, dict)
+                    and parsed_result.get("service") == "deep-agent-rag"
+                    and parsed_result.get("status")
+                    in {"healthy", "degraded", "unhealthy"}
+                    and isinstance(parsed_result.get("version"), str)
+                ):
+                    response_type = "tool_status"
+                    tool_result = parsed_result
+
+            except (ValueError, TypeError, json.JSONDecodeError):
+                print("[MCP] Status response could not be validated")
+
         # Capture retrieval evidence for this invocation.
         new_context = collector.get_context()
         documents = collector.get_documents()
@@ -331,6 +377,61 @@ def build_workflow(deep_agent, store):
             ),
             "recovery_changed": False,
             "trajectory": trajectory,
+            "response_type": response_type,
+            "tool_result": tool_result,
+        }
+
+    # This validates the MCP result without requiring document citations.
+    def evaluate_tool_response(state: WorkflowState):
+        print("\n[LANGGRAPH] Evaluate MCP tool response")
+
+        tool_result = state.get("tool_result", {})
+
+        passed = (
+            tool_result.get("service") == "deep-agent-rag"
+            and tool_result.get("status")
+            in {"healthy", "degraded", "unhealthy"}
+            and isinstance(tool_result.get("version"), str)
+        )
+
+        evaluation = {
+            "passed": passed,
+            "score": 1.0 if passed else 0.0,
+            "checks": {
+                "valid_tool_response": passed,
+            },
+            "citations": [],
+            "feedback": (
+                "MCP status tool returned a valid response."
+                if passed
+                else "MCP status response validation failed."
+            ),
+        }
+
+        attempt_record = {
+            "attempt": state["attempts"],
+            "answer": state["answer"],
+            "score": evaluation["score"],
+            "passed": evaluation["passed"],
+            "feedback": evaluation["feedback"],
+            "failure_type": (
+                "PASSED" if passed else "TOOL_FAILURE"
+            ),
+            "checks": evaluation["checks"],
+            "citations": [],
+        }
+
+        print(f"[TOOL EVALUATION] {evaluation}")
+
+        return {
+            "evaluation": evaluation,
+            "failure_type": (
+                "PASSED" if passed else "TOOL_FAILURE"
+            ),
+            "attempt_history": [
+                *state.get("attempt_history", []),
+                attempt_record,
+            ],
         }
 
 
@@ -559,6 +660,14 @@ def build_workflow(deep_agent, store):
         )
         return "retry"
 
+    def route_after_generation(state: WorkflowState) -> str:
+        if state.get("response_type") == "tool_status":
+            print("[ROUTER] MCP status response → Tool evaluation")
+            return "tool"
+
+        print("[ROUTER] Research response → RAG evaluation")
+        return "rag"
+
 
     # Build the LangGraph workflow.
     builder = StateGraph(WorkflowState)
@@ -572,13 +681,20 @@ def build_workflow(deep_agent, store):
     )
 
     builder.add_node("evaluate", evaluate_answer)
+    builder.add_node("evaluate_tool", evaluate_tool_response)
 
     builder.add_edge(START, "generate")
 
-    builder.add_edge(
+    builder.add_conditional_edges(
         "generate",
-        "evaluate_retrieval",
+        route_after_generation,
+        {
+            "tool": "evaluate_tool",
+            "rag": "evaluate_retrieval",
+        },
     )
+
+    builder.add_edge("evaluate_tool", END)
 
     builder.add_edge(
         "evaluate_retrieval",
